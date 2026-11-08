@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // GEMINI.md is a mandatory reference for every session: load it alongside AGENTS.md.
+  "instructions": ["GEMINI.md"],
+}

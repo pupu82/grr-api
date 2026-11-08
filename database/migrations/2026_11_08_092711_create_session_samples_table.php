@@ -19,7 +19,7 @@ return new class extends Migration
             $table->string('answer_key', 10);
             $table->unsignedSmallInteger('position');
             $table->timestamps();
- 
+
             $table->unique(['session_id', 'sample_id']);
             $table->index('sample_id');
         });

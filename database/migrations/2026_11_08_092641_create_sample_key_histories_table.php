@@ -20,7 +20,7 @@ return new class extends Migration
             $table->foreignId('changed_by')->constrained('users')->restrictOnDelete();
             $table->timestamp('changed_at');
             $table->timestamps();
- 
+
             $table->index('sample_id');
         });
 

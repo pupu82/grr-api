@@ -2,7 +2,7 @@
 
 namespace App\Http\Middleware;
 
-use App\Enums\UserStatus;
+use App\Enums\ErrorCode;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -22,17 +22,7 @@ class EnsureUserIsActive
         $user = $request->user();
 
         if (! $user || ! $user->status->canLogin()) {
-            $status = $user?->status;
-
-            $message = match ($status) {
-                UserStatus::Pending => 'Your account is pending approval.',
-                UserStatus::Inactive => 'Your account has been deactivated.',
-                default => 'Access denied.',
-            };
-
-            return response()->json([
-                'message' => $message,
-            ], Response::HTTP_FORBIDDEN);
+            return ErrorCode::forAccountStatus($user?->status)->response();
         }
 
         return $next($request);

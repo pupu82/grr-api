@@ -16,7 +16,7 @@ return new class extends Migration
             $table->foreignId('session_id')->constrained('inspection_sessions')->restrictOnDelete();
             $table->foreignId('user_id')->constrained()->restrictOnDelete();
             $table->timestamps();
- 
+
             $table->unique(['session_id', 'user_id']);
             $table->index('user_id');
         });

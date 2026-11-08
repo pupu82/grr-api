@@ -8,69 +8,60 @@ use App\Enums\UserStatus;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable([
-    'uuid',
     'employee_code',
     'name',
     'password',
-    'role',
-    'status',
-    'registered_via',
-    'must_change_password',
     'team_id',
-    'approved_by',
-    'approved_at',
 ])]
-#[Hidden(['password', 'remember_token'])]
+#[Hidden(['password'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
+    use HasApiTokens, HasFactory, HasUuids, SoftDeletes;
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
+    public function uniqueIds(): array
+    {
+        return ['uuid'];
+    }
+
+    public function getRouteKeyName(): string
+    {
+        return 'uuid';
+    }
+
     protected function casts(): array
     {
         return [
+            'must_change_password' => 'boolean',
+            'approved_at' => 'datetime',
             'password' => 'hashed',
             'role' => Role::class,
             'status' => UserStatus::class,
             'registered_via' => RegistrationSource::class,
-            'must_change_password' => 'boolean',
-            'approved_at' => 'datetime',
         ];
     }
 
-    /**
-     * Check if the user has the given role.
-     */
-    public function hasRole(Role $role): bool
+    public function team(): BelongsTo
     {
-        return $this->role === $role;
+        return $this->belongsTo(Team::class);
     }
 
-    /**
-     * Check if the user has any of the given roles.
-     */
-    public function hasAnyRole(Role ...$roles): bool
+    public function approver(): BelongsTo
     {
-        return in_array($this->role, $roles, strict: true);
+        return $this->belongsTo(User::class, 'approved_by');
     }
 
-    /**
-     * Check if the user account is active.
-     */
-    public function isActive(): bool
+    public function participations(): HasMany
     {
-        return $this->status === UserStatus::Active;
+        return $this->hasMany(SessionParticipant::class, 'user_id');
     }
 }

@@ -19,10 +19,10 @@ return new class extends Migration
             $table->timestamp('started_at');
             $table->timestamp('submitted_at')->nullable();
             $table->timestamps();
- 
+
             $table->unique(['participant_id', 'trial_number']);
         });
- 
+
         if (DB::getDriverName() === 'pgsql') {
             DB::statement('ALTER TABLE inspector_trials ADD CONSTRAINT inspector_trials_trial_number_check CHECK (trial_number BETWEEN 1 AND 3)');
         }

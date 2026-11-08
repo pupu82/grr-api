@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Enums\ErrorCode;
 use App\Enums\Role;
 use Closure;
 use Illuminate\Http\Request;
@@ -24,9 +25,7 @@ class RequireRole
         $user = $request->user();
 
         if (! $user) {
-            return response()->json([
-                'message' => 'Unauthenticated.',
-            ], Response::HTTP_UNAUTHORIZED);
+            return ErrorCode::Unauthenticated->response();
         }
 
         $allowedRoles = array_map(
@@ -35,9 +34,7 @@ class RequireRole
         );
 
         if (! in_array($user->role, $allowedRoles, strict: true)) {
-            return response()->json([
-                'message' => 'You do not have permission to access this resource.',
-            ], Response::HTTP_FORBIDDEN);
+            return ErrorCode::Forbidden->response();
         }
 
         return $next($request);

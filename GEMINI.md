@@ -1,109 +1,238 @@
+# GEMINI.md
+
 # Gauge R&R
 
-Laravel REST API backend for the Gauge R&R Android app: it stores attribute inspection results (Good/Defect), computes Attribute Agreement Analysis (AAA), and serves the results to Quality Engineers, QC Inspectors and QC Managers.
+Laravel REST API backend for the Gauge R&R Flutter application. It stores attribute inspection results (`good` / `defect`), computes Attribute Agreement Analysis (AAA), and serves the results to Quality Engineers, QC Inspectors and QC Managers.
 
-Stack: Laravel 13, PHP 8.3+, Pest, Laravel Sanctum (token auth for the Flutter client). PostgreSQL on Supabase for both local development and production, in two separate Supabase projects (dev and prod). SQLite in memory in tests. API only: no Blade, Livewire, Inertia or Vue.
+## 1. Responsibilities And Source Documents
 
-## Roles
-Stored in `users.role` as an enum (`App\Enums\Role`). There are exactly three:
-- `admin` (Quality Engineer and their team): manages users, master data (plants, part types, samples, answer keys, teams) and inspection sessions; views all results
-- `manager` (QC Manager): read-only; views and exports reports, cannot change any data
-- `inspector` (QC Inspector): runs an inspection session and views their own results
-- Login uses `employee_code` and password. Enforce roles with policies, never in the Flutter app. Every route requires `auth:sanctum` except login and register, which are throttled.
+Laravel owns authentication, authorization, business rules, validation, data integrity, AAA calculations and persisted results.
+
+Flutter owns presentation, user interaction, client-side usability validation, localization and API communication. Never move business logic into Flutter.
+
+- `docs/api-contract.md` is the client contract: error codes, formats, identifiers, endpoints and open decisions.
+- Update `docs/api-contract.md` in the same change as any route, request, API Resource, `ErrorCode` or enum change.
+- The Flutter repository keeps a copy of the contract and has its own `AGENTS.md`.
+- Never change the behavior of a released `/api/v1` endpoint. Breaking changes go to `/api/v2`.
+- Do not invent or silently change response fields, error codes or enum values.
+- If the contract and the implementation disagree, report it instead of changing behavior silently.
+
+## 2. Stack
+
+- Laravel 13, PHP 8.3+, Pest.
+- Laravel Sanctum for token authentication with the Flutter client.
+- PostgreSQL on Supabase for development and production, in two separate Supabase projects.
+- SQLite in memory for automated tests.
+- API only. No Blade, Livewire, Inertia or Vue.
+
+## 3. Roles And Authorization
+
+Roles are stored in `users.role` using `App\Enums\Role`. There are exactly three:
+
+- `admin` (Quality Engineer and their team): manages users, master data (plants, part types, samples, answer keys, teams) and inspection sessions. Views all results.
+- `manager` (QC Manager): read-only. Views and exports reports, never modifies data, even if a request is sent manually.
+- `inspector` (QC Inspector): runs inspection sessions and views only their own results.
+
+Rules:
+
+- Enforce every permission through Laravel Policies. Never rely on Flutter UI restrictions.
+- Every protected API route requires `auth:sanctum`. Only login and self-registration are public, and both are throttled.
 - An admin cannot delete or deactivate their own account, or the last remaining admin.
 
-## Data rules
-- Registration: an unauthenticated guest can self-register, or an admin can create the account. Self-registration always creates an `inspector` with status `pending`. The role is set on the server and is never read from the request. A pending account cannot log in or join a session until an admin activates it and assigns a team and plant.
-- Auth responses must not reveal whether an `employee_code` exists. Register returns the same "received, pending approval" response whether or not the code is already taken; a duplicate creates nothing and is logged. Do not use the `unique` validation rule on the register request, because its error message reveals the code exists.
-- Login returns one generic error for a wrong code or a wrong password. The "pending" or "inactive" message is shown only after the credentials are correct. Run a dummy password hash check when the code is unknown, so response time does not reveal it either.
-- `users.status` is an enum: `pending`, `active`, `inactive`. Also store `registered_via` (`self` or `admin`), and who approved the account and when.
-- An account created by an admin gets a temporary password and must change it on first login (`must_change_password`).
-- Users have a unique `employee_code` (internal employee code, not a national ID number) and a `uuid`. The `uuid` is the public id in the API; the bigint primary key stays internal.
-- Master data (users, plants, part types, samples, teams) uses soft deletes. Inspection results and evaluations are never deleted.
-- Plants are buildings (BCP, UCP, Plant A to G, Warehouse A to G). They are a master table that admins can extend from the app. Never hard-code the list; the seeder only provides the initial rows.
-- Sample answer keys can change after use. When a session is created, copy the samples and their keys into `session_samples`, so old results never change. Record key changes in `sample_key_histories`.
-- A session has at most 3 trials. Enforce it in the form request and with a check constraint on PostgreSQL.
-- Soft delete and unique columns: use a partial unique index `WHERE deleted_at IS NULL` (raw SQL in the migration; PostgreSQL and SQLite both support it) so a deleted record's code can be reused.
+## 4. Authentication And Registration
 
-## Commands
-- First setup: `composer run setup` (install, .env, app key, migrate, npm build)
-- Dev: `composer run dev` (server, queue worker and Vite; http://localhost:8000)
-- Tests: `php artisan test`. One file: `php artisan test tests/Feature/InspectionTest.php`
-- Filter by name: `php artisan test --filter="submits an inspection"`
-- Stop on first failure: `php artisan test --stop-on-failure`
-- Format: `./vendor/bin/pint --dirty`. Check only: `./vendor/bin/pint --test`
-- Routes: `php artisan route:list --path=api`. Command help: `php artisan help <command>`
-- New migration: `php artisan make:migration add_trial_number_to_inspection_results_table`
-- Migrate: `php artisan migrate`. Status: `php artisan migrate:status`
-- Preview migration SQL: `php artisan migrate --pretend`
-- Done means: `./vendor/bin/pint --test` and `php artisan test` both pass
+### Login
 
-## Project structure
-- `app/Http/Controllers/`: controllers. `app/Http/Requests/`: form requests. `app/Http/Resources/`: API resources
-- `app/Actions/`: domain logic, including the AAA calculation (`app/Actions/Grr/`)
-- `app/Enums/`: string-backed enums for roles, statuses, verdicts and judgements
-- `app/Models/`: Eloquent models. `app/Jobs/`: queued jobs. `app/Policies/`: authorization
-- `routes/api.php`: the API (versioned under `/api/v1`). `routes/console.php`: closure commands and the schedule
-- `bootstrap/app.php`: middleware, exception handling and route registration
-- `config/grr.php`: AAA thresholds and verdict settings
+Login accepts `employee_code` and `password`.
+
+- Return one generic `invalid_credentials` error for an unknown employee code or a wrong password.
+- Run a dummy password hash check when the code is unknown, so response time does not reveal it.
+- Reveal `pending` or `inactive` status only after the credentials are correct (`account_pending`, `account_inactive`). Issue no token in those cases.
+- While `must_change_password` is true, allow only the endpoints listed in `docs/api-contract.md`. Clear the flag only after a successful password change.
+
+### Self-Registration
+
+An unauthenticated guest can register.
+
+- Always create an `inspector` with status `pending`. The server assigns the role and never reads one from the request.
+- A pending account cannot log in or join a session until an admin activates it and assigns a team (the team belongs to a plant).
+- Return the same public response for a new request and an already-used `employee_code`. A duplicate creates no account and is logged without sensitive data.
+- Do not use the `unique` validation rule on the registration request, because its error reveals the code exists. Enforce uniqueness in the database and handle unique-constraint violations safely.
+
+### Admin-Created Accounts
+
+- Created through an authenticated and authorized admin route. Assign the role explicitly in the action.
+- Generate a temporary password server-side, return it once in the create response only, and set `must_change_password`.
+
+### Account Status
+
+`users.status` is `pending`, `active` or `inactive`. Also store `registered_via` (`self` or `admin`), who approved the account, when, and `must_change_password`. A pending or inactive account never receives a token or access to business operations.
+
+## 5. Data Rules
+
+### Users
+
+- Unique `employee_code` (an internal employee code, not a national ID number).
+- Every user has a `uuid`. The `uuid` is the public identifier. The bigint `id` stays internal and is never exposed for users.
+
+### Master Data
+
+Users, plants, part types, samples and teams use soft deletes.
+
+- Plants are buildings (BCP, UCP, Plant A to G, Warehouse A to G). They are a master table that admins extend from the application. Never hard-code the list.
+- Seeders provide only initial rows: plants, part types and the first admin. The initial admin password comes from `.env`, never from code.
+- Inspection results and evaluations are never deleted. Do not delete master data that results refer to.
+
+### Sample Answer Keys
+
+- Answer keys can change after use. When a session is created, copy the samples and their keys into `session_samples`, so historical results never change.
+- Record every key change in `sample_key_histories`.
+- Never return answer keys to Inspectors.
+
+### Inspection Sessions
+
+- A session has at most three trials. Enforce it in the Form Request and with a PostgreSQL check constraint. `trial_number` must not exceed the session's `trial_count` (validated in the application).
+- Store status with `SessionStatus`.
+- Results are append-only once a session is finished. Never update or delete completed results. Corrections create a new record.
+
+### Soft Deletes And Unique Columns
+
+Use a partial unique index `WHERE deleted_at IS NULL` (raw SQL in the migration, valid on PostgreSQL and SQLite) so a deleted record's code can be reused. Never replace a database constraint with an application-level check.
+
+## 6. Domain Rules
+
+### Verdict
+
+The verdict values in code, the database and the API are exactly `good` and `defect` (lowercase, `App\Enums\Verdict`). Never mix `OK`, `No OK`, `Good`, `Defect` and `G`/`N` in backend logic. Display labels and abbreviations are presentation-only.
+
+### AAA Metrics
+
+Metrics follow the AIAG MSA attribute study. Name them by what they measure:
+
+- `miss_rate`: defect samples judged `good` divided by all defect samples.
+- `false_alarm_rate`: good samples judged `defect` divided by all good samples.
+- `effectiveness`: correct decisions divided by all decisions.
+
+The thesis labels `miss_rate` as "P false" and `false_alarm_rate` as "P mis". These are display labels only, never identifiers, columns or API fields.
+
+### Calculation, Thresholds And Judgement
+
+- Put calculations in action classes under `app/Actions/Grr/`. Never in controllers, models or Flutter.
+- Thresholds come from the AIAG MSA manual and live in `config/grr.php`. Never hard-code, invent or change a value; ask first.
+- Guard against division by zero (no defect samples, no good samples). Return an explicit `null` for the affected metric instead of throwing.
+- `Judgement` values and criteria are provisional. Do not implement unconfirmed criteria. `grr_evaluations.judgement` is currently NOT NULL, so ask before writing a migration that makes it nullable.
+
+### Enums
+
+Enums live in `app/Enums/` as string-backed enums: `Role`, `UserStatus`, `RegistrationSource`, `Verdict`, `Judgement`, `SessionStatus`, `ErrorCode`.
+
+- Their values are stored in the database and in check constraints. Never rename a value without a migration and a contract update.
+- Never store translated labels as enum values.
+
+## 7. API Rules
+
+- Versioned under `/api/v1`. JSON only.
+- Return model data through API Resources, never raw Eloquent models.
+- Never expose password hashes, internal bigint IDs where a UUID is public, or answer keys to Inspectors.
+- Expected errors carry a stable machine-readable `code` from `App\Enums\ErrorCode`. Adding a code is backwards compatible; renaming one needs a coordinated client release. Never expose stack traces, SQL errors or secrets.
+- Keep validation in Form Requests, authorization in Policies, and controllers thin.
+- Backend values and error codes are language-independent. Never translate role, status, verdict or metric values, and never base business decisions on message text.
+- Backend-generated documents, emails or notifications that need localization require an explicit language requirement for that feature.
+
+## 8. Application Structure
+
+- `app/Http/Controllers/`, `app/Http/Requests/`, `app/Http/Resources/`
+- `app/Actions/` (domain logic, AAA under `app/Actions/Grr/`), `app/Enums/`, `app/Models/`, `app/Jobs/`, `app/Policies/`
+- `routes/api.php` (versioned under `/api/v1`), `routes/console.php`, `bootstrap/app.php`
+- `config/grr.php` (AAA thresholds)
 - `database/migrations/`, `database/factories/`, `database/seeders/`
-- `tests/Feature/`: most tests. `tests/Unit/`: tests that do not boot the app
+- `docs/api-contract.md`
+- `tests/Feature/` (most tests), `tests/Unit/` (tests that do not boot the app)
 
-## Domain rules
-- Verdict vocabulary: `Good` / `Defect` in code and the database. The app may label them G / N; do not mix OK, No OK, Good, Defect and G/N inside the backend.
-- Metrics follow the AIAG MSA attribute study. Name them by what they measure: `miss_rate` = defect samples judged Good ÷ all defect samples; `false_alarm_rate` = good samples judged Defect ÷ all good samples; `effectiveness` = correct decisions ÷ all decisions. The thesis calls `miss_rate` "P false" and `false_alarm_rate` "P mis"; those are display labels only, never identifiers.
-- Thresholds come from the AIAG MSA manual. They live in `config/grr.php`, never hard-coded. Do not invent or change a value; ask me.
-- Put the calculation in an action class under `app/Actions/Grr/`. Never in a controller, a model or the Flutter app.
-- Guard against division by zero (no defect samples, no good samples) and return an explicit result, not an exception.
-- Enums live in `app/Enums/` as string-backed enums: `Role`, `UserStatus`, `RegistrationSource`, `Verdict` (good/defect, used for `answer_key` and `inspection_results.verdict`), `Judgement` (final AAA result; provisional names until the AIAG criteria are confirmed) and `SessionStatus`. Their values are stored in the database and in check constraints, so never rename a value without a migration.
-- Stored results are append-only after an inspection session is finished. Corrections create a new record.
-- Real employee names, real inspection data and company documents never go into seeders, factories, tests, fixtures or commits. Use factories and fake data.
+## 9. Conventions
 
-## Conventions
-- Create classes with `php artisan make:*` so names and folders line up
-- Validate in form requests (`php artisan make:request StoreInspectionRequest`)
-- Save with `$request->validated()`, never `$request->all()`
-- Every model lists its mass-assignable fields with `#[Fillable([...])]`; no `$guarded = []`, no `Model::unguard()`
-- Return JSON through API resources (`php artisan make:resource`), never raw models. Never expose password hashes or answer keys to Inspectors.
-- Call `env()` only inside `config/` files; app code reads `config('...')`
-- Eager load relationships used in lists with `with()`; no N+1 queries
-- Slow or external work (report export, bulk recalculation) goes in a job that implements `ShouldQueue`
-- Controllers stay thin: validate, call an action class, return a resource
+- Create classes with `php artisan make:*`.
+- Validate through Form Requests and use `$request->validated()`, never `$request->all()`.
+- Every model lists mass-assignable fields with `#[Fillable([...])]`. No `$guarded = []`, no `Model::unguard()`.
+- Sensitive columns never appear in `#[Fillable]`; set them explicitly inside an authorized action: `users.role`, `users.status`, `users.registered_via`, `users.must_change_password`, `users.approved_by`, `users.approved_at`, `inspection_sessions.status`, `inspection_sessions.created_by`.
+- `users` and `inspection_sessions` use `HasUuids` with `uniqueIds()` returning `['uuid']` and bind routes by `uuid`.
+- Put casts in `casts()`, and use enum classes for enum columns.
+- Eager load relationships used in lists with `with()`. No N+1 queries.
+- Call `env()` only inside `config/`; application code reads `config('...')`.
+- Controllers validate through Form Requests, call an action class and return an API Resource. Business logic lives in action classes.
+- Slow or external work (report exports, bulk recalculation) goes in a job implementing `ShouldQueue`.
 
-## Migrations
-- Never edit a migration that has run anywhere but your machine; write a new one
-- Never run `migrate:fresh` or `migrate --force` unless I ask
-- Never run migrations against the Supabase production database unless I ask. Show the `--pretend` output first.
-- Every migration has a working `down()` method
-- Migrations target PostgreSQL but must also run on SQLite, the test database. PostgreSQL-only SQL (for example check constraints) goes behind a `DB::getDriverName() === 'pgsql'` check.
+## 10. Migrations
 
-## Testing
-- Pest. New feature test: `php artisan make:test InspectionTest --pest`; unit: add `--unit`
-- Prefer feature tests that hit routes over unit tests of internals
-- Test each role: allowed, forbidden (403) and unauthenticated (401)
-- Test registration: sending `role=admin` is ignored, a pending account cannot log in, and the register route is throttled
-- Test that register and login give identical responses for an existing and an unknown `employee_code`
-- Test the AAA action with hand-computed examples and edge cases: all correct, all wrong, zero defect samples, zero good samples
-- Use factories for test data; no hand-written inserts
-- Every bug fix comes with a test that failed before the fix
+- Never edit a migration that has run outside your machine. Write a new one.
+- Every migration has a working `down()` method.
+- Never run `migrate:fresh` or `migrate --force` unless explicitly requested.
+- Never migrate the Supabase production project unless explicitly requested. Show the `--pretend` output first.
+- Migrations target PostgreSQL but must also run on SQLite. PostgreSQL-only SQL (for example check constraints) goes behind `DB::getDriverName() === 'pgsql'`. Do not weaken production constraints to make SQLite tests pass.
 
-## Secrets
+## 11. Testing
+
+Use Pest. Prefer feature tests that hit routes. Use factories, never hand-written inserts. Every bug fix comes with a test that failed before the fix.
+
+Cover at least:
+
+- Each role: allowed, forbidden (`403`) and unauthenticated (`401`). Manager cannot modify data. Inspector cannot read other users' results.
+- Self-registration: always an Inspector with `pending` status, a supplied `role=admin` is ignored, identical responses for an existing and an unknown employee code, and the route is throttled.
+- Login: identical error for an unknown code and a wrong password, throttled, no token for `pending` or `inactive`, and admin-created accounts must change their password.
+- An admin cannot delete or deactivate their own account or the last remaining admin.
+- AAA action with hand-computed examples: all correct, all wrong, zero defect samples, zero good samples.
+- Maximum three trials. Completed results cannot be modified or deleted. Historical results stay unchanged after an answer key update.
+- Error responses carry the documented `code`.
+
+## 12. Database And Supabase
+
+- Supabase is used only as the PostgreSQL database. Laravel owns authentication and authorization.
+- Never use Supabase Auth, its client libraries or RLS as the authorization mechanism.
+- Never connect automated tests to Supabase. Never use production credentials in local development.
+- SSL is required (`sslmode=require`).
+- The direct connection (`db.<project-ref>.supabase.co:5432`) is IPv6-only unless the project has the IPv4 add-on. On an IPv4-only network use the session pooler (`aws-<n>-<region>.pooler.supabase.com:5432`, user `postgres.<project-ref>`).
+- Do not use the transaction pooler (port `6543`): it does not support prepared statements. Run migrations over the direct or session connection.
+
+## 13. Commands
+
+```bash
+composer run setup                       # first setup
+composer run dev                         # server, queue worker, Vite (http://localhost:8000)
+php artisan test                         # all tests
+php artisan test tests/Feature/InspectionTest.php
+php artisan test --filter="submits an inspection"
+php artisan test --stop-on-failure
+./vendor/bin/pint --dirty                # format
+./vendor/bin/pint --test                 # check only
+php artisan route:list --path=api
+php artisan help <command>
+php artisan make:migration add_trial_number_to_inspection_results_table
+php artisan migrate
+php artisan migrate:status
+php artisan migrate --pretend
+```
+
+Done means `./vendor/bin/pint --test` and `php artisan test` both pass, and `docs/api-contract.md` is updated when the API changed.
+
+## 14. Secrets
+
 - `.env` is never committed, printed or logged. Add new keys to `.env.example` with placeholder values only.
-- The Supabase database password and any Supabase API keys are secrets
-- Test-only values go in `phpunit.xml` or `.env.testing`
+- Supabase database passwords and API keys are secrets.
+- Test-only values belong in `phpunit.xml` or `.env.testing`.
 
-## Do not
-- Do not add a Composer or npm package without asking
-- Do not edit anything in `vendor/`
-- Do not run `php artisan config:cache` locally
-- Do not disable CSRF protection or mass assignment protection
-- Do not put production Supabase credentials in a local `.env`. Never run tests, `migrate:fresh`, seeders or `db:wipe` against the production project.
-- Do not change the database settings in `phpunit.xml`: tests must keep using SQLite in memory so they never touch Supabase.
-- Do not use Supabase Auth, its client libraries or row level security from this app. Laravel owns authentication and authorization; Supabase is only the PostgreSQL database.
+## 15. Do Not
 
-## Gotchas
-- Queue workers keep old code in memory. Restart them after changing a job
-- After editing `phpunit.xml` env values, run `php artisan config:clear`
-- Supabase connection: the direct connection (`db.<project-ref>.supabase.co:5432`) is IPv6 only unless the project has the IPv4 add-on. On an IPv4-only network use the session pooler (`aws-<n>-<region>.pooler.supabase.com:5432`, user `postgres.<project-ref>`). Do not use the transaction pooler (port 6543): it does not support prepared statements. Run migrations over the direct or session connection.
-- Supabase requires SSL on the connection (`sslmode=require`)
-- Tests run on SQLite but production is PostgreSQL (strict types, case-sensitive text comparison, check constraints). Do not assume a query that passes on SQLite behaves the same on PostgreSQL.
+- Do not add a Composer or npm package without asking.
+- Do not edit anything in `vendor/`.
+- Do not run `php artisan config:cache` locally.
+- Do not disable CSRF protection or mass assignment protection.
+- Do not put production Supabase credentials in a local `.env`.
+- Do not run tests, `migrate:fresh`, seeders or `db:wipe` against the production project.
+- Do not change the database settings in `phpunit.xml`. Tests must keep using SQLite in memory.
+- Do not calculate AAA metrics in Flutter, and do not hard-code AIAG thresholds anywhere.
+
+## 16. Gotchas
+
+- Queue workers keep old code in memory. Restart them after changing a job.
+- After editing `phpunit.xml` environment values, run `php artisan config:clear`.
+- Tests run on SQLite while development and production use PostgreSQL (strict typing, text comparison and constraint behavior differ). Verify database-specific behavior against PostgreSQL before relying on it.

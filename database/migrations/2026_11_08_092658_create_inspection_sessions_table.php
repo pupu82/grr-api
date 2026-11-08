@@ -24,7 +24,7 @@ return new class extends Migration
             $table->unsignedTinyInteger('trial_count');
             $table->string('status', 20)->default('draft');
             $table->timestamps();
- 
+
             $table->index(['plant_id', 'session_date']);
             $table->index('team_id');
         });
