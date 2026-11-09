@@ -14,6 +14,7 @@ class SampleKeyHistoryController extends Controller
     public function index(Sample $sample): AnonymousResourceCollection
     {
         $history = $sample->keyHistories()
+            ->with(['changer' => fn ($query) => $query->withTrashed()])
             ->orderByDesc('changed_at')
             ->paginate(50);
 

@@ -10,6 +10,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class SampleKeyHistoryResource extends JsonResource
 {
     /**
+     * The actor is exposed by public uuid, never by the internal bigint id.
+     *
      * @return array<string, mixed>
      */
     public function toArray(Request $request): array
@@ -19,7 +21,8 @@ class SampleKeyHistoryResource extends JsonResource
             'sample_id' => $this->sample_id,
             'old_key' => $this->old_key->value,
             'new_key' => $this->new_key->value,
-            'changed_by' => $this->changed_by,
+            'changed_by' => $this->whenLoaded('changer', fn (): ?string => $this->changer?->uuid),
+            'changed_by_name' => $this->whenLoaded('changer', fn (): ?string => $this->changer?->name),
             'changed_at' => $this->changed_at?->toIso8601String(),
         ];
     }

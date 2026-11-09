@@ -69,6 +69,18 @@ test('updating a sample without changing the key does not record history', funct
     expect(SampleKeyHistory::query()->where('sample_id', $sample->id)->count())->toBe(0);
 });
 
+test('the key history exposes the actor by uuid, never by the internal id', function () {
+    $sample = Sample::factory()->good()->create();
+
+    $this->patchJson('/api/v1/samples/'.$sample->id, ['answer_key' => 'defect'])
+        ->assertOk();
+
+    $this->getJson('/api/v1/samples/'.$sample->id.'/key-histories')
+        ->assertOk()
+        ->assertJsonPath('data.0.changed_by', $this->admin->uuid)
+        ->assertJsonPath('data.0.changed_by_name', $this->admin->name);
+});
+
 test('the answer key history of a sample is listed newest first', function () {
     $sample = Sample::factory()->good()->create();
 

@@ -1,117 +1,272 @@
 # API contract
 
-Contract revision: 2 (draft)
+Contract revision: 4
 
-This file is owned by the Laravel repository (`docs/api-contract.md`). The Flutter repository keeps a copy.
+This file is owned by the Laravel repository. The Flutter repository keeps a copy and must treat it as the only source of truth for the HTTP API.
 
 Rules:
 
 - Update this file in the same change as any route, request, API Resource, `App\Enums\ErrorCode` or enum change, and raise the revision number.
 - Flutter must not call an endpoint, read a field or branch on a value that is not described here. If something is missing, report it instead of guessing.
 - If this file and the implementation disagree, report it as a defect. Do not change behavior silently to match either side.
-- Items marked **(to confirm)** have not been verified against the implementation. Verify them with `php artisan route:list --path=api` and the API Resources, then remove the marker.
 - The API is versioned under `/api/v1`. Released `/api/v1` behavior never changes; breaking changes go to `/api/v2`.
+- Items marked **(planned)** do not exist yet. They describe an agreed direction and must not be called.
+- Items marked **(open)** are undecided. Neither side may assume an answer.
 
-## Conventions
+## 1. Conventions
 
-- Requests and responses are JSON. Send `Accept: application/json`.
+- Requests and responses are JSON. Send `Accept: application/json` and, when there is a body, `Content-Type: application/json`.
 - Authenticated routes need `Authorization: Bearer <Sanctum token>`.
-- Enum values are lowercase strings and are the same in the database, the API and the client. They are never translated.
-- Timestamps are ISO 8601 in UTC. `session_date` is `YYYY-MM-DD`.
-- Decimal metrics (`effectiveness`, `repeatability`, `miss_rate`, `false_alarm_rate`, `between_agreement`, `all_vs_standard`) are strings with two decimals on a 0 to 100 scale, for example `"92.50"`. `miss_rate` and `false_alarm_rate` are `null` when their denominator is zero.
-- Successful model responses use the Laravel API Resource default, a top-level `data` wrapper. **(to confirm)**
-- Public identifiers: users and inspection sessions are identified by `uuid`. The bigint `id` of those records is never exposed. **(JSON field name to confirm, see Open items.)**
+- Enum values are lowercase strings and are identical in the database, the API and the client. Never translate them.
+- Timestamps are ISO 8601 with offset, in UTC, for example `2026-11-08T07:30:00+00:00`. `session_date` is `YYYY-MM-DD` **(planned)**.
+- Pagination is Laravel's default: `{"data": [...], "links": {...}, "meta": {...}}`. Use `?page=N`. The page size is fixed by the server: 20 for `/users`, 50 for every other list. Clients must not request a different page size.
+- List order is fixed by the server: plants by `code`, part types by `name`, teams by `name`, samples by `code`, users by `name`, answer key history newest first.
+- Unknown response fields and unknown enum values must be tolerated by the client.
 
-### Enum values
+## 2. Identifiers
 
-| Enum | Values |
+- Users are identified by `uuid`. The JSON field is named `id` and contains the uuid string. The bigint primary key is never exposed. Route parameter `{user}` is the uuid.
+- Inspection sessions are identified by `uuid` and bind routes by `{session}` **(planned)**.
+- Master data (plants, teams, part types, samples) and their nested references use the integer `id`, both in JSON and in route paths.
+
+## 3. Response shapes
+
+| Case | Shape |
 | --- | --- |
-| `role` | `admin`, `manager`, `inspector` |
-| `status` (user) | `pending`, `active`, `inactive` |
-| `registered_via` | `self`, `admin` |
-| `verdict`, `answer_key` | `good`, `defect` |
-| `status` (session) | `draft`, `in_progress`, `completed` |
-| `judgement` | Provisional. Do not rely on it. |
+| Single model | `{"data": {...}}` |
+| Model list | `{"data": [...], "links": {...}, "meta": {...}}` |
+| Action with a message | `{"message": "..."}` |
+| `DELETE` | `204`, empty body |
+| Admin account created | `{"data": {...}, "temporary_password": "..."}` |
+| Login | `{"token": "...", "token_type": "Bearer", "user": {...}}` — `user` is **not** wrapped in `data` |
 
-A client must tolerate an enum value it does not know.
+Errors never use `data`. See section 8.
 
-## Endpoints
+## 4. Enum values
 
-| Method | Path | Access | Purpose |
-| --- | --- | --- | --- |
-| `GET` | `/api/v1/user` | Authenticated | Current user. Allowed while a password change is required. |
-| `POST` | `/api/v1/logout` | Authenticated | Revoke the current token. Allowed while a password change is required. |
-| `POST` | `/api/v1/password` | Authenticated | Change the password and clear the mandatory change. Allowed while a password change is required. |
-| `POST` | `/api/v1/users` | Admin | Create an account. Returns `temporary_password` once. |
-| `POST` | login route, path to confirm | Public, throttled | Log in with `employee_code` and `password`. |
-| `POST` | registration route, path to confirm | Public, throttled | Guest self-registration. |
+| Enum | Field | Values |
+| --- | --- | --- |
+| `role` | `user.role` | `admin`, `manager`, `inspector` |
+| `status` (user) | `user.status` | `pending`, `active`, `inactive` |
+| `registered_via` | `user.registered_via` | `self`, `admin` |
+| `verdict` | `answer_key`, `verdict` | `good`, `defect` |
+| `status` (session) | `session.status` **(planned)** | `draft`, `in_progress`, `completed` |
+| `judgement` | evaluation **(planned)** | Provisional. Do not rely on it. |
 
-Request and response bodies are added here as each endpoint is implemented. Endpoints for master data, sessions, inspection answers and reports are not part of the contract yet.
+## 5. Authentication and account flows
 
-## API error contract
+### Login
 
-Every expected API error is returned as JSON with a stable, machine-readable
-`code` field next to the human-readable `message`:
+`POST /api/v1/login` — public, throttled to 5 attempts per minute per IP.
+
+Request:
+
+```json
+{ "employee_code": "EMP-1000", "password": "secret" }
+```
+
+| Outcome | HTTP | `code` |
+| --- | --- | --- |
+| Valid `active` credentials | `200` with `token`, `token_type`, `user` | — |
+| Unknown `employee_code` **or** wrong password | `401` | `invalid_credentials` |
+| Correct credentials, account `pending` | `403`, no token | `account_pending` |
+| Correct credentials, account `inactive` | `403`, no token | `account_inactive` |
+
+The two credential failures are byte-identical, so the client must not try to communicate whether the employee code exists.
+
+### Mandatory password change
+
+An admin-created account logs in normally and receives a token, but `user.must_change_password` is `true`.
+
+While it is `true`, only these endpoints work:
+
+- `GET /api/v1/user`
+- `POST /api/v1/logout`
+- `POST /api/v1/password`
+
+Everything else returns `403` with `code: password_change_required`.
+
+`POST /api/v1/password`:
 
 ```json
 {
-  "message": "The provided credentials are incorrect.",
-  "code": "invalid_credentials"
+  "current_password": "temporary password",
+  "password": "new password",
+  "password_confirmation": "new password"
 }
 ```
 
-Clients (Flutter) branch on `code`. The `message` text is not part of the
-contract: it may change and must not be translated or matched on.
+Rules: new password minimum 8 characters, confirmed, and different from the current one. A wrong current password or a failed rule returns `422` `validation_failed` keyed on `current_password` or `password`. Success returns `200` `{"message": "Password changed."}` and clears the flag.
 
-Codes are defined in `App\Enums\ErrorCode` and are part of the client contract.
-Renaming a value requires a coordinated client release. Adding a code is
-backwards compatible.
+### Self-registration
 
-### Codes
+`POST /api/v1/register` — public, throttled to 5 attempts per minute per IP.
+
+```json
+{
+  "employee_code": "EMP-1000",
+  "name": "Siti Inspector",
+  "password": "secret-password",
+  "password_confirmation": "secret-password"
+}
+```
+
+- Always `202` with `{"message": "Registration received, pending approval."}`.
+- The response is identical for a new and an already-used `employee_code`. The client must not claim that an account exists or was created.
+- `role` is ignored if sent. The server always creates an `inspector` with status `pending`.
+- The account cannot log in until an admin approves it and assigns a team.
+
+### Admin-created accounts
+
+`POST /api/v1/users` returns the generated `temporary_password` once, in that response only. The account is created `active`, `registered_via: admin`, `must_change_password: true`. Never store or log the temporary password client-side beyond showing it to the admin.
+
+## 6. Endpoints
+
+`Access` uses these labels: **Public**, **Any active user**, **Admin**, **Admin or self**, **Admin and Manager (read)**.
+
+### Authentication
+
+| Method | Path | Access | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/login` | Public | Log in. |
+| `POST` | `/api/v1/register` | Public | Guest self-registration. |
+| `GET` | `/api/v1/user` | Any active user | Current user. |
+| `POST` | `/api/v1/logout` | Any active user | Revoke the current token. |
+| `POST` | `/api/v1/password` | Any active user | Change password. |
+
+### Users
+
+| Method | Path | Access | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/users` | Admin | List users. Filters: `?status=`, `?role=`. |
+| `POST` | `/api/v1/users` | Admin | Create an account. Returns `temporary_password` once. |
+| `GET` | `/api/v1/users/{user}` | Admin or self | Show one user. |
+| `POST` | `/api/v1/users/{user}/approve` | Admin | Activate a `pending` account and assign a team. |
+| `POST` | `/api/v1/users/{user}/deactivate` | Admin | Set the account to `inactive` and revoke its tokens. |
+| `DELETE` | `/api/v1/users/{user}` | Admin | Soft delete the account. |
+
+An admin cannot approve, deactivate or delete their own account, and cannot deactivate or delete the last active admin (`403` `forbidden`). Approving an account that is not `pending` returns `422` `validation_failed` keyed on `user`.
+
+### Master data
+
+Standard REST routes for each resource: `GET` list, `POST` create, `GET` one, `PUT` or `PATCH` update, `DELETE` soft delete.
+
+| Resource | Path | Extra | List filters |
+| --- | --- | --- | --- |
+| Plants | `/api/v1/plants` | | `?search=` on code and name |
+| Part types | `/api/v1/part-types` | | `?search=` on name |
+| Teams | `/api/v1/teams` | | `?plant_id=`, `?search=` on name |
+| Samples | `/api/v1/samples` | `GET .../{sample}/key-histories` | `?part_type_id=`, `?search=` on code |
+
+Access: read is Admin and Manager, write is Admin. Inspectors have no access to master data at all (`403` `forbidden`); they receive what they need through session endpoints **(planned)**.
+
+`answer_key` is only present for `admin` and `manager`. For an inspector the field is omitted entirely, not `null`.
+
+### Request bodies
+
+| Endpoint | Body |
+| --- | --- |
+| `POST /users` | `employee_code` (required, max 30, unique among non-deleted), `name` (required, max 100), `role` (required, `admin`/`manager`/`inspector`), `team_id` (optional, existing non-deleted team) |
+| `POST /users/{user}/approve` | `team_id` (required, existing non-deleted team) |
+| `POST /plants`, `PATCH /plants/{plant}` | `code` (required on create, max 30, unique among non-deleted), `name` (required on create, max 100), `is_active` (optional boolean, defaults to `true`) |
+| `POST /part-types`, `PATCH /part-types/{part_type}` | `name` (required on create, max 50) |
+| `POST /teams`, `PATCH /teams/{team}` | `plant_id` (required on create, existing non-deleted plant), `name` (required on create, max 100) |
+| `POST /samples`, `PATCH /samples/{sample}` | `code` (required on create, max 30, unique among non-deleted), `part_type_id` (required on create, existing non-deleted part type), `answer_key` (required on create, `good`/`defect`) |
+
+`PATCH` accepts a subset. Sending `null` for a required field is a validation error. A soft-deleted code can be reused, hence "unique among non-deleted".
+
+Changing `answer_key` through `PATCH /samples/{sample}` records an entry in the answer key history in the same transaction. Changing any other field does not.
+
+### Response fields
+
+User:
+
+```json
+{
+  "id": "0f1c7c1e-...",
+  "employee_code": "EMP-1000",
+  "name": "Siti Inspector",
+  "role": "inspector",
+  "status": "active",
+  "registered_via": "self",
+  "must_change_password": false,
+  "approved_at": "2026-11-08T07:30:00+00:00",
+  "team": { "id": 3, "name": "Line 1" },
+  "created_at": "2026-11-08T07:30:00+00:00"
+}
+```
+
+`team` is `null` when no team is assigned. `approved_at` is `null` until approved.
+
+Plant: `id`, `code`, `name`, `is_active`, `created_at`.
+
+Part type: `id`, `name`, `samples_count`, `created_at`. `samples_count` is only present when the server counted samples (list and show).
+
+Team: `id`, `name`, `plant_id`, `plant` (a Plant object), `created_at`.
+
+Sample: `id`, `code`, `part_type_id`, `part_type` (a Part type object), `answer_key` (admin/manager only), `created_at`.
+
+Answer key history entry: `id`, `sample_id`, `old_key`, `new_key`, `changed_by` (actor uuid), `changed_by_name`, `changed_at`.
+
+## 7. Access matrix
+
+| Area | `admin` | `manager` | `inspector` |
+| --- | --- | --- | --- |
+| Own profile, logout, password change | yes | yes | yes |
+| User management | yes | no | no |
+| Master data read | yes | yes | no |
+| Master data write | yes | no | no |
+| Sessions and results **(planned)** | all | read-only | own |
+
+`403` from a policy is `code: forbidden`. Inspectors may read only their own user record; another user's uuid returns `403`.
+
+## 8. Errors
+
+Every expected error is JSON with a stable `code` next to a human-readable `message`:
+
+```json
+{ "message": "The provided credentials are incorrect.", "code": "invalid_credentials" }
+```
+
+Branch on `code`. `message` may change, is not translated by the client, and is never used to make business decisions.
 
 | Code | HTTP | Meaning |
 | --- | --- | --- |
-| `unauthenticated` | 401 | Missing, invalid or revoked Sanctum token. |
-| `invalid_credentials` | 401 | Unknown employee code or wrong password. Deliberately identical for both, so the existence of an employee code is never revealed. |
-| `account_pending` | 403 | Credentials are correct but the account is still waiting for admin approval. No token is issued. |
-| `account_inactive` | 403 | Credentials are correct but the account has been deactivated. No token is issued. |
-| `password_change_required` | 403 | The account still uses a temporary password. Only `GET /api/v1/user`, `POST /api/v1/logout` and `POST /api/v1/password` are allowed until it is changed. |
-| `forbidden` | 403 | The authenticated role may not perform this action (policy denial). |
-| `not_found` | 404 | Unknown route or record, including UUID route model binding misses. |
-| `method_not_allowed` | 405 | The route exists but not for this HTTP method. |
-| `validation_failed` | 422 | Request validation failed. The response also carries the usual Laravel `errors` object keyed by field. |
-| `too_many_requests` | 429 | Rate limit hit on a throttled route (login, registration). |
-| `http_error` | varies | Fallback for other HTTP exceptions. Clients should treat it as an unexpected error. |
+| `unauthenticated` | 401 | Missing, invalid or revoked token. |
+| `invalid_credentials` | 401 | Unknown employee code or wrong password. |
+| `account_pending` | 403 | Credentials correct, account waiting for approval. No token. |
+| `account_inactive` | 403 | Credentials correct, account deactivated. No token. |
+| `password_change_required` | 403 | Temporary password still in use. Only the three endpoints in section 5 work. |
+| `forbidden` | 403 | The role may not perform this action. |
+| `not_found` | 404 | Unknown route or record, including uuid binding misses. |
+| `method_not_allowed` | 405 | Route exists, wrong HTTP method. |
+| `validation_failed` | 422 | Validation failed; `errors` maps field names to message arrays. |
+| `too_many_requests` | 429 | Rate limit hit; `Retry-After` header is set. |
+| `http_error` | varies | Fallback for other HTTP errors. Treat as unexpected. |
 
-### Validation errors
-
-Validation keeps the conventional Laravel shape so field errors stay
-machine-readable, with `code` added at the top level:
+Validation errors keep Laravel's `errors` object:
 
 ```json
 {
   "message": "The given data was invalid.",
   "code": "validation_failed",
-  "errors": {
-    "employee_code": ["The employee code field is required."]
-  }
+  "errors": { "employee_code": ["The employee code field is required."] }
 }
 ```
 
-## Success responses
+Codes are defined in `App\Enums\ErrorCode`. Adding a code is backwards compatible; renaming one needs a coordinated client release.
 
-Successful responses carry no `code` field. One-off secrets are returned once and never stored in plain text:
-`POST /api/v1/users` (admin-created account) generates the temporary password
-server-side and returns it as `temporary_password` in the create response only.
+## 9. Not implemented yet
 
-## Open items
+Inspection sessions, session samples, participants, trials, inspections, evaluations, AAA metrics and reports. No endpoint exists and no field is final. Do not build against guesses.
 
-These decisions are not made yet. Until they are, neither side may assume an answer.
+## 10. Open items
 
-1. **Public identifier field name.** Proposed: `uuid` for users and inspection sessions, `id` (integer) for master data. This avoids two meanings of `id`.
-2. **Master data identifiers.** Plants, teams, part types, samples and session samples have no UUID. Decide whether the API exposes the integer `id` or the `code`.
-3. **Login success body.** Which user fields are returned, whether `must_change_password` is included, and whether a token is issued when it is true. The allowed-endpoint list under `password_change_required` implies yes.
-4. **Registration response.** The HTTP status and body of the generic response, identical for a new and an already-used employee code.
-5. **Business error codes.** Proposed additions (backwards compatible): `session_not_accepting_answers`, `trial_limit_reached`, `cannot_modify_own_account`, `last_admin`. Until added, these cases return `validation_failed` or `forbidden`.
-6. **Pagination.** Format and parameters for list endpoints.
-7. **Judgement.** Values and the thresholds that produce them, pending the confirmed AIAG criteria. `grr_evaluations.judgement` is NOT NULL today and probably needs to become nullable.
+These decisions are not made. Until they are, neither side may assume an answer.
+
+1. **Judgement.** Values and thresholds are provisional, pending confirmed AIAG MSA criteria. `grr_evaluations.judgement` is `NOT NULL` today and probably must become nullable. Do not implement or display a judgement.
+2. **Session and result error codes.** Proposed additions, backwards compatible: `session_not_accepting_answers`, `trial_limit_reached`, `cannot_modify_own_account`, `last_admin`, `resource_in_use`. Until added, those cases return `validation_failed` or `forbidden`.
+3. **Deleting master data that sessions refer to.** Either refuse with `resource_in_use` or allow the soft delete and keep it visible in historical results.
+4. **User management gaps.** No route yet to update a user's name or team, reactivate an `inactive` account, or reset a forgotten password. Decide which the client needs.
+5. **Session sample identifiers.** Session samples need a public identifier once the session endpoints exist.
+6. **Evaluation serialization.** How decimal metrics are encoded in JSON (string with two decimals vs number) is unverified because the endpoints do not exist yet.
