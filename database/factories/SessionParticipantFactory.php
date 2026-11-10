@@ -22,6 +22,8 @@ class SessionParticipantFactory extends Factory
         return [
             'session_id' => InspectionSession::factory(),
             'user_id' => User::factory()->inspector(),
+            'started_at' => null,
+            'completed_at' => null,
         ];
     }
 }

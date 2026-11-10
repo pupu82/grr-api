@@ -18,7 +18,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'team_id',
     'part_type_id',
     'session_date',
-    'trial_count',
+    'response_time_limit_ms',
 ])]
 class InspectionSession extends Model
 {
@@ -39,7 +39,9 @@ class InspectionSession extends Model
     {
         return [
             'session_date' => 'date',
-            'trial_count' => 'integer',
+            'response_time_limit_ms' => 'integer',
+            'started_at' => 'datetime',
+            'completed_at' => 'datetime',
             'status' => SessionStatus::class,
         ];
     }

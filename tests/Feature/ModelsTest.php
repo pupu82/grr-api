@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\AnswerOutcome;
 use App\Enums\Judgement;
 use App\Enums\RegistrationSource;
 use App\Enums\Role;
@@ -8,7 +9,6 @@ use App\Enums\Verdict;
 use App\Models\GrrEvaluation;
 use App\Models\InspectionResult;
 use App\Models\InspectionSession;
-use App\Models\InspectorTrial;
 use App\Models\PartType;
 use App\Models\Plant;
 use App\Models\Sample;
@@ -18,6 +18,7 @@ use App\Models\SessionParticipant;
 use App\Models\SessionSample;
 use App\Models\Team;
 use App\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 
@@ -81,7 +82,9 @@ test('inspection session relations and casts work', function () {
         ->and($session->partType)->toBeInstanceOf(PartType::class)
         ->and($session->creator->role)->toBe(Role::Admin)
         ->and($session->session_date)->toBeInstanceOf(Carbon::class)
-        ->and($session->trial_count)->toBe(3)
+        ->and($session->response_time_limit_ms)->toBe(90000)
+        ->and($session->started_at)->toBeNull()
+        ->and($session->completed_at)->toBeNull()
         ->and($session->status->value)->toBe('draft');
 
     $sessionSample = SessionSample::factory()->create(['session_id' => $session->id]);
@@ -106,44 +109,60 @@ test('session sample keeps its own answer key and links to the session', functio
         ->and($sample->position)->toBeInt();
 });
 
-test('participant, trial, result and evaluation relations work', function () {
+test('participant, result and evaluation relations work', function () {
     $session = InspectionSession::factory()->create();
     $sessionSample = SessionSample::factory()->create(['session_id' => $session->id]);
     $participant = SessionParticipant::factory()->create(['session_id' => $session->id]);
 
-    $trial = InspectorTrial::factory()->create([
-        'participant_id' => $participant->id,
-        'trial_number' => 2,
-    ]);
     $result = InspectionResult::factory()->create([
         'participant_id' => $participant->id,
         'session_sample_id' => $sessionSample->id,
-        'trial_number' => 3,
         'verdict' => Verdict::Good,
     ]);
     $grr = GrrEvaluation::factory()->create(['participant_id' => $participant->id]);
 
     expect($participant->session->is($session))->toBeTrue()
         ->and($participant->user->role)->toBe(Role::Inspector)
-        ->and($participant->trials->contains($trial))->toBeTrue()
         ->and($participant->results->contains($result))->toBeTrue()
         ->and($participant->evaluation->is($grr))->toBeTrue();
-
-    expect($trial->participant->is($participant))->toBeTrue()
-        ->and($trial->trial_number)->toBe(2)
-        ->and($trial->started_at)->toBeInstanceOf(Carbon::class)
-        ->and($trial->submitted_at)->toBeNull();
 
     expect($result->participant->is($participant))->toBeTrue()
         ->and($result->sessionSample->is($sessionSample))->toBeTrue()
         ->and($result->verdict)->toBe(Verdict::Good)
-        ->and($result->trial_number)->toBe(3);
+        ->and($result->outcome)->toBe(AnswerOutcome::Answered)
+        ->and($result->response_time_ms)->toBeInt()
+        ->and($result->answered_at)->toBeInstanceOf(Carbon::class);
 
     expect($grr->participant->is($participant))->toBeTrue()
         ->and($grr->judgement)->toBe(Judgement::Acceptable)
         ->and($grr->thresholds)->toBeArray()
         ->and($grr->repeatability)->toBeString()
         ->and($grr->computed_at)->toBeInstanceOf(Carbon::class);
+});
+
+test('an inspector has exactly one verdict per sample', function () {
+    $participant = SessionParticipant::factory()->create();
+    $sessionSample = SessionSample::factory()->create(['session_id' => $participant->session_id]);
+
+    InspectionResult::factory()->create([
+        'participant_id' => $participant->id,
+        'session_sample_id' => $sessionSample->id,
+        'verdict' => Verdict::Good,
+    ]);
+
+    expect(fn () => InspectionResult::factory()->create([
+        'participant_id' => $participant->id,
+        'session_sample_id' => $sessionSample->id,
+        'verdict' => Verdict::Defect,
+    ]))->toThrow(QueryException::class);
+});
+
+test('a timed out result has no verdict and keeps the elapsed time', function () {
+    $result = InspectionResult::factory()->timedOut()->create();
+
+    expect($result->outcome)->toBe(AnswerOutcome::TimedOut)
+        ->and($result->verdict)->toBeNull()
+        ->and($result->response_time_ms)->toBe(90000);
 });
 
 test('every factory can create a valid record', function () {
@@ -157,7 +176,6 @@ test('every factory can create a valid record', function () {
         InspectionSession::factory(),
         SessionSample::factory(),
         SessionParticipant::factory(),
-        InspectorTrial::factory(),
         InspectionResult::factory(),
         GrrEvaluation::factory(),
         SessionEvaluation::factory(),

@@ -17,7 +17,9 @@ test('the seeder creates the initial plants, part types and configured admin', f
     expect(Plant::count())->toBe(16)
         ->and(Plant::where('code', 'BCP')->exists())->toBeTrue()
         ->and(Plant::where('code', 'WAREHOUSE-G')->exists())->toBeTrue()
-        ->and(PartType::count())->toBe(4);
+        ->and(PartType::count())->toBe(4)
+        ->and(PartType::query()->orderBy('id')->pluck('name')->all())
+        ->toBe(['Upper', 'Bottom', 'Bottom Stockfit', 'Sepatu']);
 
     $admin = User::query()
         ->where('employee_code', config('grr.admin_seed.employee_code'))

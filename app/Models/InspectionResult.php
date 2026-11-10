@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\AnswerOutcome;
 use App\Enums\Verdict;
 use Database\Factories\InspectionResultFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -12,8 +13,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 #[Fillable([
     'participant_id',
     'session_sample_id',
-    'trial_number',
+    'outcome',
     'verdict',
+    'response_time_ms',
+    'answered_at',
 ])]
 class InspectionResult extends Model
 {
@@ -23,8 +26,10 @@ class InspectionResult extends Model
     protected function casts(): array
     {
         return [
-            'trial_number' => 'integer',
+            'outcome' => AnswerOutcome::class,
             'verdict' => Verdict::class,
+            'response_time_ms' => 'integer',
+            'answered_at' => 'datetime',
         ];
     }
 

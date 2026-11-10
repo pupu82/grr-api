@@ -91,9 +91,17 @@ Users, plants, part types, samples and teams use soft deletes.
 
 ### Inspection Sessions
 
-- A session has at most three trials. Enforce it in the Form Request and with a PostgreSQL check constraint. `trial_number` must not exceed the session's `trial_count` (validated in the application).
-- Store status with `SessionStatus`.
+- A session plans at most three trials. Trials are simulations performed outside the application: the Quality Engineer asks the inspector whether a sample is good or defect, and each answer is one trial. Trials are never stored, so there is no trial table, no `trial_number` and no `trial_count` in the application.
+- The application records exactly one real-inspection verdict per inspector per sample, enforced by a unique constraint on `inspection_results (participant_id, session_sample_id)`.
+- Store status with `SessionStatus`. A session starts as `draft`; starting it freezes the sample snapshot, the participants and the response time limit.
+- The admin selects the samples and the participating inspectors when the session is created. The samples are copied with their answer keys and a `position` (the inspection order).
 - Results are append-only once a session is finished. Never update or delete completed results. Corrections create a new record.
+- Each inspector answers in `position` order, one sample at a time. Skipping ahead and returning to an earlier sample are both forbidden.
+- Each participant has exactly one outcome per session sample: `answered` with a `good`/`defect` verdict, or `timed_out` without a verdict.
+- The client runs the response stopwatch and sends the elapsed `response_time_ms`; the server validates and stores it. The limit is per session, defaults to `config('grr.inspection.response_time_limit_ms')` (90 seconds) and may only change while the session is a draft. Answers may be queued offline and synced later, so the server must not reject an answer only because it arrived after the limit in wall-clock time.
+- A session is `completed` when every participant has an outcome for every session sample. Participants may start and finish on different days; each has their own `started_at` and `completed_at`.
+- An admin can force-close an `in_progress` session when an inspector will never finish. Unfinished participants keep `completed_at` null, keep their stored answers and are not evaluated; never invent a verdict or a timeout for them.
+- Repeating an identical answer payload for the same sample is idempotent and returns the stored row, so an offline queue can retry after the session completed. A different payload for a locked sample is rejected.
 
 ### Soft Deletes And Unique Columns
 
@@ -112,6 +120,8 @@ Metrics follow the AIAG MSA attribute study. Name them by what they measure:
 - `miss_rate`: defect samples judged `good` divided by all defect samples.
 - `false_alarm_rate`: good samples judged `defect` divided by all good samples.
 - `effectiveness`: correct decisions divided by all decisions.
+
+A `timed_out` sample has no verdict. Never count it as `good` or as `defect`; handle it explicitly in AAA and report it as missing data.
 
 The thesis labels `miss_rate` as "P false" and `false_alarm_rate` as "P mis". These are display labels only, never identifiers, columns or API fields.
 
@@ -181,7 +191,8 @@ Cover at least:
 - Login: identical error for an unknown code and a wrong password, throttled, no token for `pending` or `inactive`, and admin-created accounts must change their password.
 - An admin cannot delete or deactivate their own account or the last remaining admin.
 - AAA action with hand-computed examples: all correct, all wrong, zero defect samples, zero good samples.
-- Maximum three trials. Completed results cannot be modified or deleted. Historical results stay unchanged after an answer key update.
+- Exactly one real-inspection verdict per inspector per sample (trials are simulations outside the application and are not stored). Completed results cannot be modified or deleted. Historical results stay unchanged after an answer key update.
+- A timed-out sample is stored without a verdict and never counted as good or defect. An inspector cannot answer out of order or return to an earlier sample.
 - Error responses carry the documented `code`.
 
 ## 12. Database And Supabase
@@ -206,7 +217,7 @@ php artisan test --stop-on-failure
 ./vendor/bin/pint --test                 # check only
 php artisan route:list --path=api
 php artisan help <command>
-php artisan make:migration add_trial_number_to_inspection_results_table
+php artisan make:migration add_session_id_to_inspection_results_table
 php artisan migrate
 php artisan migrate:status
 php artisan migrate --pretend

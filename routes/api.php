@@ -1,12 +1,15 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\InspectionResultController;
+use App\Http\Controllers\InspectionSessionController;
 use App\Http\Controllers\PartTypeController;
 use App\Http\Controllers\PlantController;
 use App\Http\Controllers\SampleController;
 use App\Http\Controllers\SampleKeyHistoryController;
 use App\Http\Controllers\TeamController;
 use App\Http\Controllers\UserController;
+use App\Models\InspectionSession;
 use App\Models\PartType;
 use App\Models\Plant;
 use App\Models\Sample;
@@ -74,6 +77,17 @@ Route::prefix('v1')->group(function () {
             Route::delete('/samples/{sample}', [SampleController::class, 'destroy'])->can('delete', 'sample');
             Route::get('/samples/{sample}/key-histories', [SampleKeyHistoryController::class, 'index'])
                 ->can('viewAny', SampleKeyHistory::class);
+
+            // Inspection sessions
+            Route::get('/sessions', [InspectionSessionController::class, 'index'])->can('viewAny', InspectionSession::class);
+            Route::post('/sessions', [InspectionSessionController::class, 'store'])->can('create', InspectionSession::class);
+            Route::get('/sessions/{session}', [InspectionSessionController::class, 'show'])->can('view', 'session');
+            Route::post('/sessions/{session}/start', [InspectionSessionController::class, 'start'])->can('start', 'session');
+            Route::post('/sessions/{session}/start-run', [InspectionSessionController::class, 'startRun'])->can('startRun', 'session');
+            Route::get('/sessions/{session}/current-sample', [InspectionSessionController::class, 'currentSample'])->can('viewCurrentSample', 'session');
+            Route::post('/sessions/{session}/results', [InspectionResultController::class, 'store'])->can('submitResult', 'session');
+            Route::post('/sessions/{session}/close', [InspectionSessionController::class, 'close'])->can('close', 'session');
+            Route::delete('/sessions/{session}', [InspectionSessionController::class, 'destroy'])->can('delete', 'session');
         });
     });
 });

@@ -12,7 +12,7 @@ class PartTypeSeeder extends Seeder
      */
     public function run(): void
     {
-        foreach (['Part Type A', 'Part Type B', 'Part Type C', 'Part Type D'] as $name) {
+        foreach (['Upper', 'Bottom', 'Bottom Stockfit', 'Sepatu'] as $name) {
             PartType::firstOrCreate(['name' => $name]);
         }
     }

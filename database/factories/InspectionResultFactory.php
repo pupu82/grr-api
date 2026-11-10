@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\AnswerOutcome;
 use App\Enums\Verdict;
 use App\Models\InspectionResult;
 use App\Models\SessionParticipant;
@@ -27,8 +28,19 @@ class InspectionResultFactory extends Factory
                     'session_id' => SessionParticipant::findOrFail($attributes['participant_id'])->session_id,
                 ])
                 ->id,
-            'trial_number' => 1,
+            'outcome' => AnswerOutcome::Answered,
             'verdict' => fake()->randomElement(Verdict::cases()),
+            'response_time_ms' => fake()->numberBetween(1000, 90000),
+            'answered_at' => now(),
         ];
+    }
+
+    public function timedOut(): static
+    {
+        return $this->state(fn (): array => [
+            'outcome' => AnswerOutcome::TimedOut,
+            'verdict' => null,
+            'response_time_ms' => 90000,
+        ]);
     }
 }

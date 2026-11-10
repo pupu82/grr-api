@@ -24,7 +24,9 @@ class SessionSampleFactory extends Factory
             'session_id' => InspectionSession::factory(),
             'sample_id' => Sample::factory(),
             'answer_key' => fn (array $attributes) => Sample::findOrFail($attributes['sample_id'])->answer_key,
-            'position' => fake()->numberBetween(1, 30),
+            'position' => fn (array $attributes): int => (int) SessionSample::query()
+                ->where('session_id', $attributes['session_id'])
+                ->max('position') + 1,
         ];
     }
 

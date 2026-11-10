@@ -28,7 +28,7 @@ class InspectionSessionFactory extends Factory
             'part_type_id' => PartType::factory(),
             'created_by' => User::factory()->admin(),
             'session_date' => fake()->dateTimeBetween('-1 month', 'now')->format('Y-m-d'),
-            'trial_count' => 3,
+            'response_time_limit_ms' => 90000,
             'status' => SessionStatus::Draft,
         ];
     }
@@ -45,6 +45,7 @@ class InspectionSessionFactory extends Factory
     {
         return $this->state(fn (): array => [
             'status' => SessionStatus::InProgress,
+            'started_at' => now(),
         ]);
     }
 
@@ -52,6 +53,8 @@ class InspectionSessionFactory extends Factory
     {
         return $this->state(fn (): array => [
             'status' => SessionStatus::Completed,
+            'started_at' => now()->subHour(),
+            'completed_at' => now(),
         ]);
     }
 }

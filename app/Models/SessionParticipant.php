@@ -16,6 +16,14 @@ class SessionParticipant extends Model
     /** @use HasFactory<SessionParticipantFactory> */
     use HasFactory;
 
+    protected function casts(): array
+    {
+        return [
+            'started_at' => 'datetime',
+            'completed_at' => 'datetime',
+        ];
+    }
+
     public function session(): BelongsTo
     {
         return $this->belongsTo(InspectionSession::class, 'session_id');
@@ -24,11 +32,6 @@ class SessionParticipant extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
-    }
-
-    public function trials(): HasMany
-    {
-        return $this->hasMany(InspectorTrial::class, 'participant_id');
     }
 
     public function results(): HasMany
