@@ -64,6 +64,13 @@ An unauthenticated guest can register.
 - Created through an authenticated and authorized admin route. Assign the role explicitly in the action.
 - Generate a temporary password server-side, return it once in the create response only, and set `must_change_password`.
 
+### Password Recovery
+
+- An admin may reset another account's password through `POST /users/{user}/reset-password`. Never their own: self-change still requires `current_password`.
+- A reset generates a temporary password, returns it once, sets `must_change_password` and revokes every token of the target. Role, status and team stay unchanged.
+- For the last active admin, who has no other admin to reset them, use the server-only break-glass command `php artisan grr:reset-password <employee_code>`. It requires server access, prints the temporary password once and never bypasses HTTP authorization because it is not an HTTP route.
+- Never add a public "reset by employee_code" route. An employee code is not a secret.
+
 ### Account Status
 
 `users.status` is `pending`, `active` or `inactive`. Also store `registered_via` (`self` or `admin`), who approved the account, when, and `must_change_password`. A pending or inactive account never receives a token or access to business operations.
@@ -152,7 +159,7 @@ Enums live in `app/Enums/` as string-backed enums: `Role`, `UserStatus`, `Regist
 ## 8. Application Structure
 
 - `app/Http/Controllers/`, `app/Http/Requests/`, `app/Http/Resources/`
-- `app/Actions/` (domain logic, AAA under `app/Actions/Grr/`), `app/Enums/`, `app/Models/`, `app/Jobs/`, `app/Policies/`
+- `app/Actions/` (domain logic, AAA under `app/Actions/Grr/`), `app/Enums/`, `app/Models/`, `app/Jobs/`, `app/Policies/`, `app/Console/Commands/`
 - `routes/api.php` (versioned under `/api/v1`), `routes/console.php`, `bootstrap/app.php`
 - `config/grr.php` (AAA thresholds)
 - `database/migrations/`, `database/factories/`, `database/seeders/`
@@ -189,7 +196,7 @@ Cover at least:
 - Each role: allowed, forbidden (`403`) and unauthenticated (`401`). Manager cannot modify data. Inspector cannot read other users' results.
 - Self-registration: always an Inspector with `pending` status, a supplied `role=admin` is ignored, identical responses for an existing and an unknown employee code, and the route is throttled.
 - Login: identical error for an unknown code and a wrong password, throttled, no token for `pending` or `inactive`, and admin-created accounts must change their password.
-- An admin cannot delete or deactivate their own account or the last remaining admin.
+- An admin cannot delete or deactivate their own account or the last remaining admin. A password reset is admin-initiated, refuses self-targeting, revokes tokens and forces a password change. The break-glass command rescues the last admin and refuses to run non-interactively without `--force`.
 - AAA action with hand-computed examples: all correct, all wrong, zero defect samples, zero good samples.
 - Exactly one real-inspection verdict per inspector per sample (trials are simulations outside the application and are not stored). Completed results cannot be modified or deleted. Historical results stay unchanged after an answer key update.
 - A timed-out sample is stored without a verdict and never counted as good or defect. An inspector cannot answer out of order or return to an earlier sample.
@@ -217,6 +224,7 @@ php artisan test --stop-on-failure
 ./vendor/bin/pint --test                 # check only
 php artisan route:list --path=api
 php artisan help <command>
+php artisan grr:reset-password EMP-1000 --force   # server-only break-glass recovery
 php artisan make:migration add_session_id_to_inspection_results_table
 php artisan migrate
 php artisan migrate:status

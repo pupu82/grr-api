@@ -7,6 +7,7 @@ use App\Actions\Users\CreateUser;
 use App\Actions\Users\DeactivateUser;
 use App\Actions\Users\DeleteUser;
 use App\Actions\Users\GenerateTemporaryPassword;
+use App\Actions\Users\ResetUserPassword;
 use App\Http\Requests\ApproveUserRequest;
 use App\Http\Requests\StoreUserRequest;
 use App\Http\Resources\UserResource;
@@ -15,6 +16,7 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 class UserController extends Controller
@@ -81,6 +83,34 @@ class UserController extends Controller
         );
 
         return new UserResource($user->load('team'));
+    }
+
+    /**
+     * Reset another account's forgotten password. The server-generated
+     * temporary password is returned exactly once, every existing token is
+     * revoked and the account must change it on the next login.
+     */
+    public function resetPassword(
+        Request $request,
+        User $user,
+        ResetUserPassword $resetUserPassword,
+        GenerateTemporaryPassword $generateTemporaryPassword,
+    ): JsonResponse {
+        $temporaryPassword = $generateTemporaryPassword->handle();
+
+        $user = $resetUserPassword->handle($user, $temporaryPassword);
+
+        // Audit who reset which account, without ever logging the password.
+        Log::info('User password reset', [
+            'actor_id' => $request->user()->uuid,
+            'target_id' => $user->uuid,
+        ]);
+
+        return (new UserResource($user->load('team')))
+            ->additional([
+                'temporary_password' => $temporaryPassword,
+            ])
+            ->response();
     }
 
     /**

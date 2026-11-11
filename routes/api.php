@@ -45,6 +45,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/users', [UserController::class, 'store'])->can('create', User::class);
             Route::get('/users/{user}', [UserController::class, 'show'])->can('view', 'user');
             Route::post('/users/{user}/approve', [UserController::class, 'approve'])->can('approve', 'user');
+            Route::post('/users/{user}/reset-password', [UserController::class, 'resetPassword'])->can('resetPassword', 'user');
             Route::post('/users/{user}/deactivate', [UserController::class, 'deactivate'])->can('deactivate', 'user');
             Route::delete('/users/{user}', [UserController::class, 'destroy'])->can('delete', 'user');
 
@@ -85,6 +86,7 @@ Route::prefix('v1')->group(function () {
             Route::post('/sessions/{session}/start', [InspectionSessionController::class, 'start'])->can('start', 'session');
             Route::post('/sessions/{session}/start-run', [InspectionSessionController::class, 'startRun'])->can('startRun', 'session');
             Route::get('/sessions/{session}/current-sample', [InspectionSessionController::class, 'currentSample'])->can('viewCurrentSample', 'session');
+            Route::get('/sessions/{session}/results', [InspectionResultController::class, 'index'])->can('viewResults', 'session');
             Route::post('/sessions/{session}/results', [InspectionResultController::class, 'store'])->can('submitResult', 'session');
             Route::post('/sessions/{session}/close', [InspectionSessionController::class, 'close'])->can('close', 'session');
             Route::delete('/sessions/{session}', [InspectionSessionController::class, 'destroy'])->can('delete', 'session');

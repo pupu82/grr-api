@@ -26,7 +26,9 @@ class SessionParticipantResource extends JsonResource
             'started_at' => $this->started_at?->toIso8601String(),
             'completed_at' => $this->completed_at?->toIso8601String(),
             'results_count' => $this->whenCounted('results'),
+            'timed_out_count' => $this->whenCounted('timedOutResults'),
             'is_complete' => $this->completed_at !== null,
+            'results' => InspectionResultResource::collection($this->whenLoaded('results')),
         ];
     }
 }

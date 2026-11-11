@@ -49,6 +49,15 @@ class UserPolicy
     }
 
     /**
+     * Replace another account's forgotten password. Never your own: a signed-in
+     * user changes their own password by proving the current one.
+     */
+    public function resetPassword(User $actor, User $target): bool
+    {
+        return $actor->role === Role::Admin && ! $actor->is($target);
+    }
+
+    /**
      * Deactivate an account, but never your own and never the last active admin.
      */
     public function deactivate(User $actor, User $target): bool

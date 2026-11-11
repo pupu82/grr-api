@@ -20,6 +20,7 @@ test('every protected user route requires authentication', function (string $met
     ['POST', '/api/v1/users'],
     ['GET', '/api/v1/users/{user}'],
     ['POST', '/api/v1/users/{user}/approve'],
+    ['POST', '/api/v1/users/{user}/reset-password'],
     ['POST', '/api/v1/users/{user}/deactivate'],
     ['DELETE', '/api/v1/users/{user}'],
 ]);
@@ -37,6 +38,7 @@ test('admin routes are forbidden for inspectors and managers', function (string 
     ['POST', '/api/v1/users'],
     ['GET', '/api/v1/users/{user}'],
     ['POST', '/api/v1/users/{user}/approve'],
+    ['POST', '/api/v1/users/{user}/reset-password'],
     ['POST', '/api/v1/users/{user}/deactivate'],
     ['DELETE', '/api/v1/users/{user}'],
 ]);
@@ -207,4 +209,90 @@ test('an admin can soft delete another account', function () {
     $this->deleteJson('/api/v1/users/'.$victim->uuid)->assertNoContent();
 
     $this->assertSoftDeleted('users', ['id' => $victim->id]);
+});
+
+test('an admin resets another account with a temporary password shown once', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create(['employee_code' => 'EMP-7000']);
+    $target->createToken('api');
+    $target->createToken('api');
+    Sanctum::actingAs($admin);
+
+    $response = $this->postJson('/api/v1/users/'.$target->uuid.'/reset-password')
+        ->assertOk()
+        ->assertJsonPath('data.id', $target->uuid)
+        ->assertJsonPath('data.must_change_password', true)
+        ->assertJsonStructure(['data' => ['id', 'employee_code'], 'temporary_password']);
+
+    $temporaryPassword = $response->json('temporary_password');
+
+    $target->refresh();
+
+    expect($temporaryPassword)->toBeString()->toHaveLength(12)
+        ->and(Hash::check($temporaryPassword, $target->password))->toBeTrue()
+        ->and(Hash::check('password', $target->password))->toBeFalse()
+        ->and($target->must_change_password)->toBeTrue()
+        ->and($target->tokens()->count())->toBe(0);
+
+    $this->getJson('/api/v1/users/'.$target->uuid)
+        ->assertOk()
+        ->assertJsonMissingPath('temporary_password');
+});
+
+test('a reset password replaces the old one and forces a change after login', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create(['employee_code' => 'EMP-7100']);
+    Sanctum::actingAs($admin);
+
+    $temporaryPassword = $this->postJson('/api/v1/users/'.$target->uuid.'/reset-password')
+        ->assertOk()
+        ->json('temporary_password');
+
+    $this->app['auth']->forgetGuards();
+
+    $this->postJson('/api/v1/login', [
+        'employee_code' => 'EMP-7100',
+        'password' => 'password',
+    ])->assertUnauthorized();
+
+    $this->postJson('/api/v1/login', [
+        'employee_code' => 'EMP-7100',
+        'password' => $temporaryPassword,
+    ])
+        ->assertOk()
+        ->assertJsonPath('user.must_change_password', true);
+});
+
+test('an admin cannot reset their own password through the admin route', function () {
+    $admin = User::factory()->admin()->create();
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$admin->uuid.'/reset-password')
+        ->assertForbidden()
+        ->assertJsonPath('code', 'forbidden');
+
+    expect(Hash::check('password', $admin->refresh()->password))->toBeTrue();
+});
+
+test('an admin can reset another admin even when only two admins exist', function () {
+    $actor = User::factory()->admin()->create();
+    $target = User::factory()->admin()->create();
+    Sanctum::actingAs($actor);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reset-password')
+        ->assertOk()
+        ->assertJsonPath('data.id', $target->uuid);
+
+    expect($target->refresh()->must_change_password)->toBeTrue();
+});
+
+test('a soft-deleted account cannot be reset', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create();
+    $target->delete();
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reset-password')
+        ->assertNotFound()
+        ->assertJsonPath('code', 'not_found');
 });

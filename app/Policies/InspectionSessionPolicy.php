@@ -52,6 +52,15 @@ class InspectionSessionPolicy
         return $this->isParticipant($actor, $session);
     }
 
+    /**
+     * Admins and managers read every participant's outcomes; an inspector only
+     * their own. The controller applies the row-level scope.
+     */
+    public function viewResults(User $actor, InspectionSession $session): bool
+    {
+        return $this->view($actor, $session);
+    }
+
     public function submitResult(User $actor, InspectionSession $session): bool
     {
         return $this->isParticipant($actor, $session);

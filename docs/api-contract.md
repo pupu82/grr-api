@@ -1,6 +1,6 @@
 # API contract
 
-Contract revision: 7
+Contract revision: 9
 
 This file is owned by the Laravel repository. The Flutter repository keeps a copy and must treat it as the only source of truth for the HTTP API.
 
@@ -44,6 +44,7 @@ Therefore trials are never stored and never sent. There is no trial resource, no
 | Action with a message | `{"message": "..."}` |
 | `DELETE` | `204`, empty body |
 | Admin account created | `{"data": {...}, "temporary_password": "..."}` |
+| Password reset by an admin | `{"data": {...}, "temporary_password": "..."}` |
 | Login | `{"token": "...", "token_type": "Bearer", "user": {...}}` — `user` is **not** wrapped in `data` |
 
 Errors never use `data`. See section 8.
@@ -127,6 +128,25 @@ Rules: new password minimum 8 characters, confirmed, and different from the curr
 
 `POST /api/v1/users` returns the generated `temporary_password` once, in that response only. The account is created `active`, `registered_via: admin`, `must_change_password: true`. Never store or log the temporary password client-side beyond showing it to the admin.
 
+### Forgotten password and break-glass recovery
+
+`POST /api/v1/users/{user}/reset-password` — Admin only, and never for the admin's own account.
+
+- Replaces the target's password with a server-generated `temporary_password`, returned once in that response only.
+- Sets `must_change_password: true`, so the target must change it on the next login before using any other endpoint.
+- Revokes every token the target still holds.
+- Leaves role, status and team unchanged. A soft-deleted account cannot be reset (`404` `not_found`).
+- An admin resets their own password through `POST /password` with `current_password`; the admin route refuses self-targeting with `403` `forbidden`.
+- If another admin is still able to log in, that admin performs the reset. This is the normal recovery path.
+
+If the **last active admin** is locked out, no API route can help by design: resetting the highest-privilege account must not be possible with only a known employee code. A server operator uses the break-glass command:
+
+```bash
+php artisan grr:reset-password EMP-1000 --force
+```
+
+The command prints the new temporary password once, revokes existing tokens, sets `must_change_password` and keeps role/status. It only works with server access, and it does not bypass any HTTP authorization because it is not an HTTP route. Without `--force` it asks for confirmation; without an interactive terminal it refuses to run. It is not exposed to the Flutter client.
+
 ## 6. Endpoints
 
 `Access` uses these labels: **Public**, **Any active user**, **Admin**, **Admin or self**, **Admin and Manager (read)**, **Participating Inspector**.
@@ -149,10 +169,11 @@ Rules: new password minimum 8 characters, confirmed, and different from the curr
 | `POST` | `/api/v1/users` | Admin | Create an account. Returns `temporary_password` once. |
 | `GET` | `/api/v1/users/{user}` | Admin or self | Show one user. |
 | `POST` | `/api/v1/users/{user}/approve` | Admin | Activate a `pending` account and assign a team. |
+| `POST` | `/api/v1/users/{user}/reset-password` | Admin (not self) | Replace a forgotten password. Returns `temporary_password` once and revokes tokens. |
 | `POST` | `/api/v1/users/{user}/deactivate` | Admin | Set the account to `inactive` and revoke its tokens. |
 | `DELETE` | `/api/v1/users/{user}` | Admin | Soft delete the account. |
 
-An admin cannot approve, deactivate or delete their own account, and cannot deactivate or delete the last active admin (`403` `forbidden`). Approving an account that is not `pending` returns `422` `validation_failed` keyed on `user`.
+An admin cannot approve, reset the password of, deactivate or delete their own account, and cannot deactivate or delete the last active admin (`403` `forbidden`). Approving an account that is not `pending` returns `422` `validation_failed` keyed on `user`.
 
 ### Master data
 
@@ -179,6 +200,7 @@ Access: read is Admin and Manager, write is Admin. Inspectors have no access to 
 | `POST` | `/api/v1/sessions/{session}/start` | Admin | Move `draft` to `in_progress` and freeze samples, participants and the time limit. |
 | `POST` | `/api/v1/sessions/{session}/start-run` | Participating Inspector | Start this inspector's run and return the first sample. Repeating it is harmless. |
 | `GET` | `/api/v1/sessions/{session}/current-sample` | Participating Inspector | The next sample this inspector must answer, or `null` when finished. |
+| `GET` | `/api/v1/sessions/{session}/results` | Admin, Manager, participating Inspector (own) | List the stored outcomes, grouped by participant. |
 | `POST` | `/api/v1/sessions/{session}/results` | Participating Inspector | Submit one outcome (`answered` or `timed_out`) for the current sample. |
 | `POST` | `/api/v1/sessions/{session}/close` | Admin | Force-close an `in_progress` session. |
 | `DELETE` | `/api/v1/sessions/{session}` | Admin | Delete a `draft` session. |
@@ -195,6 +217,9 @@ Access: read is Admin and Manager, write is Admin. Inspectors have no access to 
 - A participant is complete when they have an outcome for every sample. The session becomes `completed` automatically when every participant is complete.
 - An admin may force-close an `in_progress` session for an inspector who will never finish. Unfinished participants keep `completed_at: null`, keep the answers they already submitted and are not evaluated. No verdict or timeout is invented for missing samples.
 - A force-closed or completed session accepts no new answers (`422` keyed on `status`). Repeating an already accepted answer with an identical payload still returns `200`, so an offline queue can drain.
+- `GET /sessions/{session}/results` returns every stored outcome for admins and managers, and only the inspector's own participant row for an inspector. It is readable in every session status; a draft has no outcomes yet.
+- Results are ordered by sample `position`. A participant's `results_count` counts every outcome and `timed_out_count` counts missing data. `answer_key` is present only for admins and managers.
+- A soft-deleted inspector still appears in historical results with their stored outcomes.
 
 ### Submitting an answer
 
@@ -294,7 +319,7 @@ Session:
 
 Session sample: `id` (integer, only meaningful inside this session), `sample_id`, `code`, `position`, `answer_key` (admin/manager only, omitted for inspectors).
 
-Participant: `id` (integer), `user` (`id` = uuid, `employee_code`, `name`), `started_at`, `completed_at`, `results_count`, `is_complete`. `results_count` is present on `GET /sessions/{session}` and `POST /sessions/{session}/close`.
+Participant: `id` (integer), `user` (`id` = uuid, `employee_code`, `name`), `started_at`, `completed_at`, `results_count`, `is_complete`. `results_count` is present on `GET /sessions/{session}` and `POST /sessions/{session}/close`. On `GET /sessions/{session}/results` it also carries `timed_out_count` and the `results` array.
 
 Progress (returned by `start-run`, `current-sample` and `results`):
 
@@ -340,6 +365,57 @@ Progress (returned by `start-run`, `current-sample` and `results`):
 - `current_sample` never contains `answer_key`.
 - `result` and `result_created` are `null` on `start-run` and `current-sample`. On `results`, `result` is the stored row and `result_created` is `true` for a new row (`201`) or `false` for an idempotent repeat (`200`).
 - `result.verdict` is `null` for `timed_out`; `result.answered_at` is the device time.
+
+Results list (`GET /sessions/{session}/results`):
+
+```json
+{
+  "data": {
+    "session": {
+      "id": "6c1f0f7e-...",
+      "token": "SES-2026-0001",
+      "status": "completed",
+      "session_date": "2026-11-12",
+      "response_time_limit_ms": 90000,
+      "started_at": "2026-11-12T08:00:00+00:00",
+      "completed_at": "2026-11-12T09:00:00+00:00",
+      "samples_count": 20,
+      "participants_count": 3
+    },
+    "samples": [
+      { "id": 41, "sample_id": 5, "code": "SMP-0001", "position": 1, "answer_key": "good" }
+    ],
+    "participants": [
+      {
+        "id": 7,
+        "user": { "id": "0f1c7c1e-...", "employee_code": "EMP-1000", "name": "Siti Inspector" },
+        "started_at": "2026-11-12T08:00:00+00:00",
+        "completed_at": "2026-11-12T08:40:00+00:00",
+        "results_count": 20,
+        "timed_out_count": 1,
+        "is_complete": true,
+        "results": [
+          {
+            "id": 77,
+            "session_sample_id": 41,
+            "position": 1,
+            "outcome": "answered",
+            "verdict": "good",
+            "response_time_ms": 15240,
+            "answered_at": "2026-11-12T08:15:12+00:00",
+            "created_at": "2026-11-12T08:15:40+00:00"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- `samples[].answer_key` is omitted for inspectors.
+- A `timed_out` row keeps `verdict: null`; it is missing data, never `good` or `defect`.
+- An inspector receives only their own participant row, while `participants_count` stays the session total.
+- `results` is empty for a participant who has not started, and for a draft session. `timed_out_count` is only present on this endpoint.
 
 ## 7. Access matrix
 
@@ -392,7 +468,7 @@ Codes are defined in `App\Enums\ErrorCode`. Adding a code is backwards compatibl
 
 ## 9. Not implemented yet
 
-Evaluations, AAA metrics and report exports. Session creation, snapshots, starting a session, per-inspector runs, answers, timeouts and completion exist. Results are visible only through the inspector's own progress payloads; there is no result list or report endpoint yet.
+Evaluations, AAA metrics and report exports. Session creation, snapshots, starting a session, per-inspector runs, answers, timeouts, completion and the per-session results list exist. There is no evaluation or report export endpoint yet.
 
 `timed_out` rows are missing data, not a verdict. Do not count them as `good` or `defect` when AAA endpoints arrive.
 
@@ -403,9 +479,8 @@ These decisions are not made. Until they are, neither side may assume an answer.
 1. **Judgement.** Values and thresholds are provisional, pending confirmed AIAG MSA criteria. `grr_evaluations.judgement` is `NOT NULL` today and probably must become nullable. Do not implement or display a judgement.
 2. **Session and result error codes.** Proposed additions, backwards compatible: `session_not_accepting_answers`, `sample_already_answered`, `cannot_modify_own_account`, `last_admin`, `resource_in_use`. Until added, those cases return `validation_failed` or `forbidden`.
 3. **Deleting master data that sessions refer to.** Either refuse with `resource_in_use` or allow the soft delete and keep it visible in historical results.
-4. **User management gaps.** No route yet to update a user's name or team, reactivate an `inactive` account, or reset a forgotten password. Decide which the client needs.
+4. **User management gaps.** No route yet to update a user's name or team, or reactivate an `inactive` account. A forgotten password is reset by another admin (`POST /users/{user}/reset-password`) or, for the last admin, by the server operator with `grr:reset-password`.
 5. **Evaluation serialization.** How decimal metrics are encoded in JSON (string with two decimals vs number) is unverified because the endpoints do not exist yet.
 6. **Repeatability.** Inspector repeatability needs repeated verdicts for the same sample, but trials are simulations outside the application and are not stored. `grr_evaluations.repeatability` is `NOT NULL` today, so the column either must be removed or given a different definition. Until decided, do not display a repeatability value.
 7. **Editing a draft session.** The time limit, samples and participants can be chosen at creation only; there is no update endpoint yet. Decide whether the client needs to edit a draft before it starts.
-8. **Result and progress history.** There is no endpoint to list a participant's stored answers after the fact, or for a manager to read a session's results. Decide the shape before building reports.
-9. **Removing a participant.** A participant who never starts leaves the session open. Today the admin can only force-close the whole session. Decide whether removing an untouched participant is needed.
+8. **Removing a participant.** A participant who never starts leaves the session open. Today the admin can only force-close the whole session. Decide whether removing an untouched participant is needed.

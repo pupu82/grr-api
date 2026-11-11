@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\AnswerOutcome;
 use Database\Factories\SessionParticipantFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -37,6 +38,15 @@ class SessionParticipant extends Model
     public function results(): HasMany
     {
         return $this->hasMany(InspectionResult::class, 'participant_id');
+    }
+
+    /**
+     * Missing data, not a verdict. Kept separate so reports never count a
+     * timeout as `good` or `defect`.
+     */
+    public function timedOutResults(): HasMany
+    {
+        return $this->results()->where('outcome', AnswerOutcome::TimedOut);
     }
 
     public function evaluation(): HasOne
