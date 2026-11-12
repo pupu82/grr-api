@@ -7,12 +7,18 @@ use App\Actions\Users\CreateUser;
 use App\Actions\Users\DeactivateUser;
 use App\Actions\Users\DeleteUser;
 use App\Actions\Users\GenerateTemporaryPassword;
+use App\Actions\Users\ReactivateUser;
 use App\Actions\Users\ResetUserPassword;
+use App\Actions\Users\UpdateUser;
+use App\Enums\Role;
 use App\Http\Requests\ApproveUserRequest;
+use App\Http\Requests\ReactivateUserRequest;
 use App\Http\Requests\StoreUserRequest;
+use App\Http\Requests\UpdateUserRequest;
 use App\Http\Resources\UserResource;
 use App\Models\Team;
 use App\Models\User;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -72,6 +78,22 @@ class UserController extends Controller
     }
 
     /**
+     * Update the editable profile fields. A user may rename their own account;
+     * only an admin may move an account to another team. Identity, role and
+     * status have their own dedicated actions and cannot be mass-assigned here.
+     */
+    public function update(UpdateUserRequest $request, User $user, UpdateUser $updateUser): UserResource
+    {
+        if ($request->user()->role !== Role::Admin && $request->has('team_id')) {
+            throw new AuthorizationException('Only an admin can change the team of an account.');
+        }
+
+        return new UserResource(
+            $updateUser->handle($request->user(), $user, $request->validated())->load('team'),
+        );
+    }
+
+    /**
      * Approve a pending account and assign it to a team.
      */
     public function approve(ApproveUserRequest $request, User $user, ApproveUser $approveUser): UserResource
@@ -111,6 +133,24 @@ class UserController extends Controller
                 'temporary_password' => $temporaryPassword,
             ])
             ->response();
+    }
+
+    /**
+     * Return an inactive account to active, assigning a team when it has none.
+     */
+    public function reactivate(
+        ReactivateUserRequest $request,
+        User $user,
+        ReactivateUser $reactivateUser,
+    ): UserResource {
+        $teamId = $request->validated('team_id');
+
+        $user = $reactivateUser->handle(
+            $user,
+            $teamId === null ? null : Team::findOrFail($teamId),
+        );
+
+        return new UserResource($user->load('team'));
     }
 
     /**

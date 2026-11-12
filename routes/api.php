@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\GrrEvaluationController;
 use App\Http\Controllers\InspectionResultController;
 use App\Http\Controllers\InspectionSessionController;
 use App\Http\Controllers\PartTypeController;
@@ -44,8 +45,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/users', [UserController::class, 'index'])->can('viewAny', User::class);
             Route::post('/users', [UserController::class, 'store'])->can('create', User::class);
             Route::get('/users/{user}', [UserController::class, 'show'])->can('view', 'user');
+            Route::match(['put', 'patch'], '/users/{user}', [UserController::class, 'update'])->can('update', 'user');
             Route::post('/users/{user}/approve', [UserController::class, 'approve'])->can('approve', 'user');
             Route::post('/users/{user}/reset-password', [UserController::class, 'resetPassword'])->can('resetPassword', 'user');
+            Route::post('/users/{user}/reactivate', [UserController::class, 'reactivate'])->can('reactivate', 'user');
             Route::post('/users/{user}/deactivate', [UserController::class, 'deactivate'])->can('deactivate', 'user');
             Route::delete('/users/{user}', [UserController::class, 'destroy'])->can('delete', 'user');
 
@@ -88,6 +91,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/sessions/{session}/current-sample', [InspectionSessionController::class, 'currentSample'])->can('viewCurrentSample', 'session');
             Route::get('/sessions/{session}/results', [InspectionResultController::class, 'index'])->can('viewResults', 'session');
             Route::post('/sessions/{session}/results', [InspectionResultController::class, 'store'])->can('submitResult', 'session');
+            Route::get('/sessions/{session}/evaluation', [GrrEvaluationController::class, 'show'])->can('viewEvaluation', 'session');
             Route::post('/sessions/{session}/close', [InspectionSessionController::class, 'close'])->can('close', 'session');
             Route::delete('/sessions/{session}', [InspectionSessionController::class, 'destroy'])->can('delete', 'session');
         });

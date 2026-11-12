@@ -75,6 +75,10 @@ An unauthenticated guest can register.
 
 `users.status` is `pending`, `active` or `inactive`. Also store `registered_via` (`self` or `admin`), who approved the account, when, and `must_change_password`. A pending or inactive account never receives a token or access to business operations.
 
+Only an admin reactivates an `inactive` account, through `POST /users/{user}/reactivate` and never by the account itself. A team is required only when the account has none; the original approval trail stays unchanged.
+
+`PATCH /users/{user}` changes only `name` and `team_id`. A user may rename their own account but only an admin changes a team. `employee_code`, `role`, `status` and passwords are never mass-assigned from an update request; they have dedicated actions.
+
 ## 5. Data Rules
 
 ### Users
@@ -137,7 +141,10 @@ The thesis labels `miss_rate` as "P false" and `false_alarm_rate` as "P mis". Th
 - Put calculations in action classes under `app/Actions/Grr/`. Never in controllers, models or Flutter.
 - Thresholds come from the AIAG MSA manual and live in `config/grr.php`. Never hard-code, invent or change a value; ask first.
 - Guard against division by zero (no defect samples, no good samples). Return an explicit `null` for the affected metric instead of throwing.
-- `Judgement` values and criteria are provisional. Do not implement unconfirmed criteria. `grr_evaluations.judgement` is currently NOT NULL, so ask before writing a migration that makes it nullable.
+- The evaluation endpoint computes metrics on demand from the immutable verdicts of a completed session. It returns per-participant metrics plus the session-level `between_agreement` and `all_vs_standard` across completed participants. Do not persist `grr_evaluations` or `session_evaluations` while judgement and repeatability are unconfirmed, and return no judgement, threshold or repeatability.
+- Session-level agreement compares only participants with `completed_at`; fewer than two makes both rates `null`. A sample is excluded when any compared participant timed out (or has no stored result), reported as `excluded_samples`. `between_agreement` is the share of compared samples where all compared participants gave the same verdict. `all_vs_standard` additionally requires that verdict to equal the session sample's answer key. This is not Kappa. An unfinished participant of a force-closed session is never compared.
+- Serialize decimal metrics as strings with two decimals (`"33.33"`); `null` means the denominator is zero or the comparison is undefined, never `0`.
+- `Judgement` values for session-level agreement are derived from `all_vs_standard`: `acceptable` (>90%), `marginal` (80–90%), `unacceptable` (<80%). Returned in the `agreement` object of the evaluation endpoint. Per-participant judgement remains unconfirmed.
 
 ### Enums
 
@@ -198,6 +205,7 @@ Cover at least:
 - Login: identical error for an unknown code and a wrong password, throttled, no token for `pending` or `inactive`, and admin-created accounts must change their password.
 - An admin cannot delete or deactivate their own account or the last remaining admin. A password reset is admin-initiated, refuses self-targeting, revokes tokens and forces a password change. The break-glass command rescues the last admin and refuses to run non-interactively without `--force`.
 - AAA action with hand-computed examples: all correct, all wrong, zero defect samples, zero good samples.
+- The evaluation endpoint is read-only for admin and manager, forbidden for an inspector, and rejects a session that is not completed. Timed-out samples never enter a rate.
 - Exactly one real-inspection verdict per inspector per sample (trials are simulations outside the application and are not stored). Completed results cannot be modified or deleted. Historical results stay unchanged after an answer key update.
 - A timed-out sample is stored without a verdict and never counted as good or defect. An inspector cannot answer out of order or return to an earlier sample.
 - Error responses carry the documented `code`.

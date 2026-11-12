@@ -19,8 +19,10 @@ test('every protected user route requires authentication', function (string $met
     ['GET', '/api/v1/users'],
     ['POST', '/api/v1/users'],
     ['GET', '/api/v1/users/{user}'],
+    ['PATCH', '/api/v1/users/{user}'],
     ['POST', '/api/v1/users/{user}/approve'],
     ['POST', '/api/v1/users/{user}/reset-password'],
+    ['POST', '/api/v1/users/{user}/reactivate'],
     ['POST', '/api/v1/users/{user}/deactivate'],
     ['DELETE', '/api/v1/users/{user}'],
 ]);
@@ -37,8 +39,10 @@ test('admin routes are forbidden for inspectors and managers', function (string 
     ['GET', '/api/v1/users'],
     ['POST', '/api/v1/users'],
     ['GET', '/api/v1/users/{user}'],
+    ['PATCH', '/api/v1/users/{user}'],
     ['POST', '/api/v1/users/{user}/approve'],
     ['POST', '/api/v1/users/{user}/reset-password'],
+    ['POST', '/api/v1/users/{user}/reactivate'],
     ['POST', '/api/v1/users/{user}/deactivate'],
     ['DELETE', '/api/v1/users/{user}'],
 ]);
@@ -295,4 +299,155 @@ test('a soft-deleted account cannot be reset', function () {
     $this->postJson('/api/v1/users/'.$target->uuid.'/reset-password')
         ->assertNotFound()
         ->assertJsonPath('code', 'not_found');
+});
+
+test('an admin can rename another account and move it to another team', function () {
+    $admin = User::factory()->admin()->create();
+    $team = Team::factory()->create();
+    $target = User::factory()->create(['name' => 'Old Name']);
+    Sanctum::actingAs($admin);
+
+    $this->patchJson('/api/v1/users/'.$target->uuid, [
+        'name' => 'New Name',
+        'team_id' => $team->id,
+    ])->assertOk()
+        ->assertJsonPath('data.name', 'New Name')
+        ->assertJsonPath('data.team.id', $team->id);
+
+    $target->refresh();
+
+    expect($target->name)->toBe('New Name')
+        ->and($target->team_id)->toBe($team->id);
+});
+
+test('a user can rename their own account but cannot move themselves to another team', function () {
+    $inspector = User::factory()->inspector()->create();
+    $team = Team::factory()->create();
+    Sanctum::actingAs($inspector);
+
+    $this->patchJson('/api/v1/users/'.$inspector->uuid, ['name' => 'Renamed'])
+        ->assertOk()
+        ->assertJsonPath('data.name', 'Renamed');
+
+    $this->patchJson('/api/v1/users/'.$inspector->uuid, ['team_id' => $team->id])
+        ->assertForbidden()
+        ->assertJsonPath('code', 'forbidden');
+
+    expect($inspector->refresh()->team_id)->not->toBe($team->id);
+});
+
+test('a user update cannot change identity or authorization fields', function (array $payload, string $field) {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create();
+    Sanctum::actingAs($admin);
+
+    $this->patchJson('/api/v1/users/'.$target->uuid, $payload)
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'validation_failed')
+        ->assertJsonValidationErrors($field);
+})->with([
+    'employee code' => [['employee_code' => 'EMP-9999'], 'employee_code'],
+    'role' => [['role' => 'manager'], 'role'],
+    'status' => [['status' => 'inactive'], 'status'],
+    'password' => [['password' => 'secret'], 'password'],
+]);
+
+test('a soft-deleted account cannot be updated', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->create();
+    $target->delete();
+    Sanctum::actingAs($admin);
+
+    $this->patchJson('/api/v1/users/'.$target->uuid, ['name' => 'Ghost'])
+        ->assertNotFound()
+        ->assertJsonPath('code', 'not_found');
+});
+
+test('an admin can reactivate an inactive account that still has a team', function () {
+    $admin = User::factory()->admin()->create();
+    $team = Team::factory()->create();
+    $target = User::factory()->inactive()->forTeam($team)->create(['approved_by' => $admin->id]);
+    $target->createToken('api');
+    $originalApprover = $target->approved_by;
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reactivate')
+        ->assertOk()
+        ->assertJsonPath('data.status', 'active')
+        ->assertJsonPath('data.team.id', $team->id);
+
+    $target->refresh();
+
+    expect($target->status)->toBe(UserStatus::Active)
+        ->and($target->team_id)->toBe($team->id)
+        ->and($target->approved_by)->toBe($originalApprover)
+        ->and($target->tokens()->count())->toBe(0);
+});
+
+test('an inactive account without a team needs a team to be reactivated', function () {
+    $admin = User::factory()->admin()->create();
+    $target = User::factory()->inactive()->create(['team_id' => null]);
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reactivate')
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('team_id');
+
+    expect($target->refresh()->status)->toBe(UserStatus::Inactive);
+});
+
+test('an inactive account without a team can be reactivated with a new team', function () {
+    $admin = User::factory()->admin()->create();
+    $team = Team::factory()->create();
+    $target = User::factory()->inactive()->create(['team_id' => null]);
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reactivate', ['team_id' => $team->id])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'active')
+        ->assertJsonPath('data.team.id', $team->id);
+
+    expect($target->refresh()->team_id)->toBe($team->id);
+});
+
+test('only an inactive account can be reactivated', function (UserStatus $status) {
+    $admin = User::factory()->admin()->create();
+    $team = Team::factory()->create();
+    $target = User::factory()->forTeam($team)->create(['status' => $status]);
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reactivate')
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'validation_failed')
+        ->assertJsonValidationErrors('user');
+})->with([
+    'active' => [UserStatus::Active],
+    'pending' => [UserStatus::Pending],
+]);
+
+test('an admin cannot reactivate their own account', function () {
+    $admin = User::factory()->admin()->create();
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$admin->uuid.'/reactivate')
+        ->assertForbidden()
+        ->assertJsonPath('code', 'forbidden');
+});
+
+test('a reactivated account can sign in again', function () {
+    $admin = User::factory()->admin()->create();
+    $team = Team::factory()->create();
+    $target = User::factory()->inactive()->forTeam($team)->create(['employee_code' => 'EMP-8100']);
+    Sanctum::actingAs($admin);
+
+    $this->postJson('/api/v1/users/'.$target->uuid.'/reactivate')->assertOk();
+
+    $this->app['auth']->forgetGuards();
+
+    $this->postJson('/api/v1/login', [
+        'employee_code' => 'EMP-8100',
+        'password' => 'password',
+    ])->assertOk()
+        ->assertJsonPath('user.id', $target->uuid)
+        ->assertJsonStructure(['token']);
 });

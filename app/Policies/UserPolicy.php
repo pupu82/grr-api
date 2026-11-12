@@ -58,6 +58,16 @@ class UserPolicy
     }
 
     /**
+     * Reactivate an inactive account: admins only, and never their own. An
+     * inactive account cannot sign in, so self-reactivation is not reachable,
+     * but the rule stays explicit.
+     */
+    public function reactivate(User $actor, User $target): bool
+    {
+        return $actor->role === Role::Admin && ! $actor->is($target);
+    }
+
+    /**
      * Deactivate an account, but never your own and never the last active admin.
      */
     public function deactivate(User $actor, User $target): bool

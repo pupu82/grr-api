@@ -67,6 +67,15 @@ class InspectionSessionPolicy
     }
 
     /**
+     * Evaluation is a report: admins and managers only. An inspector may read
+     * their own stored results, never the comparative metrics.
+     */
+    public function viewEvaluation(User $actor, InspectionSession $session): bool
+    {
+        return in_array($actor->role, [Role::Admin, Role::Manager], strict: true);
+    }
+
+    /**
      * The escape hatch for an inspector who will never finish.
      */
     public function close(User $actor, InspectionSession $session): bool

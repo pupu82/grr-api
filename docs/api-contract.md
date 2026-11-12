@@ -1,6 +1,6 @@
 # API contract
 
-Contract revision: 9
+Contract revision: 14
 
 This file is owned by the Laravel repository. The Flutter repository keeps a copy and must treat it as the only source of truth for the HTTP API.
 
@@ -23,11 +23,11 @@ Rules:
 - List order is fixed by the server: plants by `code`, part types by `name`, teams by `name`, samples by `code`, users by `name`, sessions by newest `session_date` first, answer key history newest first.
 - Unknown response fields and unknown enum values must be tolerated by the client.
 
-### Trials and simulations
+### Practice trials
 
-An attribute-study trial is one round of simulation performed **outside the application**: the Quality Engineer asks the inspector "is this sample good or defect?", and each answer is one trial (at most three). The application is used only for the real inspection that follows.
+Practice trials are performed **outside the application**: the Quality Engineer asks the inspector "is this sample good or defect?", and each answer is one practice trial (at most three). The application is used only for the real inspection that follows.
 
-Therefore trials are never stored and never sent. There is no trial resource, no trial endpoint and no trial field. The application records exactly **one real-inspection verdict per inspector per sample**.
+Therefore practice trials are never stored and never sent. There is no trial resource, no trial endpoint and no trial field. The application records exactly **one real-inspection verdict per inspector per sample**.
 
 ## 2. Identifiers
 
@@ -168,12 +168,18 @@ The command prints the new temporary password once, revokes existing tokens, set
 | `GET` | `/api/v1/users` | Admin | List users. Filters: `?status=`, `?role=`. |
 | `POST` | `/api/v1/users` | Admin | Create an account. Returns `temporary_password` once. |
 | `GET` | `/api/v1/users/{user}` | Admin or self | Show one user. |
+| `PATCH` | `/api/v1/users/{user}` | Admin or self | Update the display name. Only an admin may change `team_id`. |
 | `POST` | `/api/v1/users/{user}/approve` | Admin | Activate a `pending` account and assign a team. |
 | `POST` | `/api/v1/users/{user}/reset-password` | Admin (not self) | Replace a forgotten password. Returns `temporary_password` once and revokes tokens. |
+| `POST` | `/api/v1/users/{user}/reactivate` | Admin (not self) | Return an `inactive` account to `active`. |
 | `POST` | `/api/v1/users/{user}/deactivate` | Admin | Set the account to `inactive` and revoke its tokens. |
 | `DELETE` | `/api/v1/users/{user}` | Admin | Soft delete the account. |
 
-An admin cannot approve, reset the password of, deactivate or delete their own account, and cannot deactivate or delete the last active admin (`403` `forbidden`). Approving an account that is not `pending` returns `422` `validation_failed` keyed on `user`.
+An admin cannot approve, reset the password of, reactivate, deactivate or delete their own account, and cannot deactivate or delete the last active admin (`403` `forbidden`). Approving an account that is not `pending` returns `422` `validation_failed` keyed on `user`.
+
+`PATCH /users/{user}` only changes `name` and `team_id`. `employee_code`, `role`, `status`, `password` and the approval columns are rejected with `422` `validation_failed`; those have their own actions. A user editing their own account can change `name` but not `team_id` (`403` `forbidden`). Changing a team does not reset the account status or require re-approval.
+
+`POST /users/{user}/reactivate` only accepts an `inactive` account; anything else returns `422` `validation_failed` keyed on `user`. The previous approval trail is kept. A `team_id` is required only when the account has no team, because an inspector without a team cannot join a session.
 
 ### Master data
 
@@ -202,6 +208,7 @@ Access: read is Admin and Manager, write is Admin. Inspectors have no access to 
 | `GET` | `/api/v1/sessions/{session}/current-sample` | Participating Inspector | The next sample this inspector must answer, or `null` when finished. |
 | `GET` | `/api/v1/sessions/{session}/results` | Admin, Manager, participating Inspector (own) | List the stored outcomes, grouped by participant. |
 | `POST` | `/api/v1/sessions/{session}/results` | Participating Inspector | Submit one outcome (`answered` or `timed_out`) for the current sample. |
+| `GET` | `/api/v1/sessions/{session}/evaluation` | Admin, Manager | Computed per-participant attribute agreement metrics and session-level agreement for a completed session. |
 | `POST` | `/api/v1/sessions/{session}/close` | Admin | Force-close an `in_progress` session. |
 | `DELETE` | `/api/v1/sessions/{session}` | Admin | Delete a `draft` session. |
 
@@ -242,12 +249,31 @@ Access: read is Admin and Manager, write is Admin. Inspectors have no access to 
 - The first successful submission returns `201`. Repeating the same `outcome`, `verdict` and `response_time_ms` for the same sample returns `200` with the stored record and creates no second row. A different payload for a locked sample returns `422` keyed on `session_sample_id`.
 - A timed-out sample has no verdict. The client moves to the next sample once `response_time_ms` reaches the limit; the server does not invent a verdict.
 
+### Session evaluation
+
+`GET /api/v1/sessions/{session}/evaluation` — Admin and Manager only.
+
+Computes the AIAG attribute agreement metrics from the stored verdicts of a completed session. Nothing is persisted and the numbers are recomputed on demand.
+
+- Only a `completed` session can be evaluated. A `draft` or `in_progress` session returns `422` `validation_failed` keyed on `status`.
+- A force-closed session counts as completed. Unfinished participants are evaluated from the verdicts they actually stored; no verdict or timeout is invented for a missing sample.
+- A `timed_out` sample has no verdict. It is missing data: it never counts as `good` or `defect`, never enters a denominator, and is reported in `timed_out_samples`.
+- `agreement` holds the session-level result. Only participants with `completed_at` are compared; fewer than two of them makes both rates `null`. An unfinished participant of a force-closed session is never compared.
+- A sample is excluded when any compared participant timed out on it, or has no stored result. It is missing data, so it leaves both session rates instead of counting as a disagreement. `excluded_samples` counts these; `compared_samples` is the rest. Zero compared samples makes both rates `null`.
+- `between_agreement` = samples where every compared participant gave the same verdict divided by compared samples.
+- `all_vs_standard` = samples where every compared participant gave the same verdict and that verdict equals the session sample's `answer_key` divided by compared samples. A sample where the participants disagree never counts, even if the majority is correct.
+- `between_agreement` and `all_vs_standard` are strings with two decimals, or `null`, never `0`. This is not Kappa.
+- No judgement, threshold or repeatability is returned. Those criteria are not confirmed (see section 10).
+- An inspector cannot read this endpoint (`403` `forbidden`). They keep access to their own stored results.
+
 ### Request bodies
 
 | Endpoint | Body |
 | --- | --- |
 | `POST /users` | `employee_code` (required, max 30, unique among non-deleted), `name` (required, max 100), `role` (required, `admin`/`manager`/`inspector`), `team_id` (optional, existing non-deleted team) |
+| `PATCH /users/{user}` | `name` (optional, max 100), `team_id` (optional, existing non-deleted team or `null`; admin only). All other fields are rejected. |
 | `POST /users/{user}/approve` | `team_id` (required, existing non-deleted team) |
+| `POST /users/{user}/reactivate` | `team_id` (required only when the account has no team; existing non-deleted team) |
 | `POST /plants`, `PATCH /plants/{plant}` | `code` (required on create, max 30, unique among non-deleted), `name` (required on create, max 100), `is_active` (optional boolean, defaults to `true`) |
 | `POST /part-types`, `PATCH /part-types/{part_type}` | `name` (required on create, max 50) |
 | `POST /teams`, `PATCH /teams/{team}` | `plant_id` (required on create, existing non-deleted plant), `name` (required on create, max 100) |
@@ -417,6 +443,81 @@ Results list (`GET /sessions/{session}/results`):
 - An inspector receives only their own participant row, while `participants_count` stays the session total.
 - `results` is empty for a participant who has not started, and for a draft session. `timed_out_count` is only present on this endpoint.
 
+Evaluation (`GET /sessions/{session}/evaluation`):
+
+```json
+{
+  "data": {
+    "session": {
+      "id": "6c1f0f7e-...",
+      "token": "SES-2026-0001",
+      "status": "completed",
+      "session_date": "2026-11-12",
+      "response_time_limit_ms": 90000,
+      "started_at": "2026-11-12T08:00:00+00:00",
+      "completed_at": "2026-11-12T09:00:00+00:00",
+      "samples_count": 20,
+      "participants_count": 3
+    },
+    "participants": [
+      {
+        "participant_id": 7,
+        "user": { "id": "0f1c7c1e-...", "employee_code": "EMP-1000", "name": "Siti Inspector" },
+        "started_at": "2026-11-12T08:00:00+00:00",
+        "completed_at": "2026-11-12T08:40:00+00:00",
+        "is_complete": true,
+        "metrics": {
+          "effectiveness": "95.00",
+          "miss_rate": "10.00",
+          "false_alarm_rate": "0.00",
+          "decisions": 19,
+          "correct_decisions": 18,
+          "defect_decisions": 10,
+          "good_decisions": 9,
+          "missed_defects": 1,
+          "false_alarms": 0,
+          "timed_out_samples": 1
+        }
+      }
+    ],
+    "agreement": {
+      "participants_compared": 3,
+      "compared_samples": 19,
+      "excluded_samples": 1,
+      "between_agreement": "89.47",
+      "all_vs_standard": "78.95",
+      "judgement": "conditional"
+    }
+  }
+}
+```
+
+| metric | formula | notes |
+| --- | --- | --- |
+| `decisions` | \( \text{number of answered samples} \) | Excludes timed out samples |
+| `correct_decisions` | \( \text{verdict} = \text{answer\_key} \) | Samples where verdict matches key |
+| `defect_decisions` | verdict = `defect` and matches key | |
+| `good_decisions` | verdict = `good` and matches key | |
+| `missed_defects` | verdict = `good` when key = `defect` | Incorrect defects |
+| `false_alarms` | verdict = `defect` when key = `good` | Incorrectly flagged |
+| `timed_out_samples` | \( \text{number of outcomes} = \text{timed\_out} \) | Missing data, never counted in rates |
+| `miss_rate` | \( \dfrac{ \text{missed\_defects} }{ \text{defect\_decisions} + \text{missed\_defects} } \) | 0 when \( \text{defect\_decisions} + \text{missed\_defects} = 0 \) |
+| `false_alarm_rate` | \( \dfrac{ \text{false\_alarms} }{ \text{good\_decisions} + \text{false\_alarms} } \) | 0 when \( \text{good\_decisions} + \text{false\_alarms} = 0 \) |
+| `effectiveness` | \( \dfrac{ \text{correct\_decisions} }{ \text{decisions} } \) | 0 when \( \text{decisions} = 0 \) |
+| `between_agreement` | \( \dfrac{ \text{samples where all compared participants agree} }{ \text{compared\_samples} } \times 100 \) | **String**; 0 or null when undefined |
+| `all_vs_standard` | \( \dfrac{ \text{samples where all agree and match key} }{ \text{compared\_samples} } \times 100 \) | **String**; 0 or null when undefined |
+
+| field name | endpoint | notes |
+| --- | --- | --- |
+| `timed_out_samples` | evaluation | Count of timed out outcomes |
+| `timed_out_count` | results | Count of timed out outcomes |
+
+- `judgement` is derived from `all_vs_standard`: `acceptable` (>90%), `marginal` (80–90%), `unacceptable` (<80%), or `null` when undefined.
+- `effectiveness`, `miss_rate`, `false_alarm_rate`, `between_agreement` and `all_vs_standard` are strings with exactly two decimals, or `null` when their denominator is zero or the comparison is undefined.
+- `is_complete` is `false` for a participant of a force-closed session who never finished. Their metrics cover only the stored verdicts, and they are not part of `agreement`.
+- A soft-deleted inspector still appears in the evaluation.
+- `agreement` is additive: older clients may ignore it without breaking.
+
 ## 7. Access matrix
 
 | Area | `admin` | `manager` | `inspector` |
@@ -427,6 +528,7 @@ Results list (`GET /sessions/{session}/results`):
 | Master data write | yes | no | no |
 | Sessions | all | read-only | own |
 | Results | all | read-only | own |
+| Evaluations | all | read-only | no |
 
 `403` from a policy is `code: forbidden`. Inspectors may read only their own user record; another user's uuid returns `403`.
 
@@ -468,19 +570,19 @@ Codes are defined in `App\Enums\ErrorCode`. Adding a code is backwards compatibl
 
 ## 9. Not implemented yet
 
-Evaluations, AAA metrics and report exports. Session creation, snapshots, starting a session, per-inspector runs, answers, timeouts, completion and the per-session results list exist. There is no evaluation or report export endpoint yet.
+Per-participant attribute agreement metrics and session-level agreement exist for a completed session. Not implemented: judgement, thresholds, persisted evaluations and report exports.
 
-`timed_out` rows are missing data, not a verdict. Do not count them as `good` or `defect` when AAA endpoints arrive.
+`timed_out` rows are missing data, not a verdict. They never count as `good` or `defect` in any metric. Repeatability is not measured.
 
 ## 10. Open items
 
 These decisions are not made. Until they are, neither side may assume an answer.
 
-1. **Judgement.** Values and thresholds are provisional, pending confirmed AIAG MSA criteria. `grr_evaluations.judgement` is `NOT NULL` today and probably must become nullable. Do not implement or display a judgement.
+1. **Judgement.** Per-participant judgement is not implemented. Session-level judgement (`acceptable`, `marginal`, `unacceptable`) is computed from `all_vs_standard` and returned in the `agreement` object. Thresholds for per-participant or session-level judgement remain provisional.
 2. **Session and result error codes.** Proposed additions, backwards compatible: `session_not_accepting_answers`, `sample_already_answered`, `cannot_modify_own_account`, `last_admin`, `resource_in_use`. Until added, those cases return `validation_failed` or `forbidden`.
 3. **Deleting master data that sessions refer to.** Either refuse with `resource_in_use` or allow the soft delete and keep it visible in historical results.
-4. **User management gaps.** No route yet to update a user's name or team, or reactivate an `inactive` account. A forgotten password is reset by another admin (`POST /users/{user}/reset-password`) or, for the last admin, by the server operator with `grr:reset-password`.
-5. **Evaluation serialization.** How decimal metrics are encoded in JSON (string with two decimals vs number) is unverified because the endpoints do not exist yet.
-6. **Repeatability.** Inspector repeatability needs repeated verdicts for the same sample, but trials are simulations outside the application and are not stored. `grr_evaluations.repeatability` is `NOT NULL` today, so the column either must be removed or given a different definition. Until decided, do not display a repeatability value.
-7. **Editing a draft session.** The time limit, samples and participants can be chosen at creation only; there is no update endpoint yet. Decide whether the client needs to edit a draft before it starts.
-8. **Removing a participant.** A participant who never starts leaves the session open. Today the admin can only force-close the whole session. Decide whether removing an untouched participant is needed.
+4. **Changing a role or employee code.** Neither is editable today. Decide whether an admin ever needs to change a role in place, or whether a new account replaces the old one. `employee_code` is an identity and should stay immutable.
+5. **Repeatability.** Inspector repeatability requires repeated verdicts for the same sample under identical conditions. Practice trials are performed outside the application and are not stored; repeatability is not measured.
+6. **Editing a draft session.** The time limit, samples and participants can be chosen at creation only; there is no update endpoint yet. Decide whether the client needs to edit a draft before it starts.
+7. **Removing a participant.** A participant who never starts leaves the session open. Today the admin can only force-close the whole session. Decide whether removing an untouched participant is needed.
+8. **Persisting evaluations.** `grr_evaluations` and `session_evaluations` remain unused because saving a row would require a judgement. Decide whether to persist computed metrics later, or keep recalculating on demand.
