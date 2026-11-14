@@ -1,6 +1,6 @@
 # API contract
 
-Contract revision: 14
+Contract revision: 16
 
 This file is owned by the Laravel repository. The Flutter repository keeps a copy and must treat it as the only source of truth for the HTTP API.
 
@@ -188,9 +188,13 @@ Standard REST routes for each resource: `GET` list, `POST` create, `GET` one, `P
 | Resource | Path | Extra | List filters |
 | --- | --- | --- | --- |
 | Plants | `/api/v1/plants` | | `?search=` on code and name |
+
+A plant is a production or warehouse building. It is never a botanical plant.
 | Part types | `/api/v1/part-types` | | `?search=` on name |
 | Teams | `/api/v1/teams` | | `?plant_id=`, `?search=` on name |
 | Samples | `/api/v1/samples` | `GET .../{sample}/key-histories` | `?part_type_id=`, `?search=` on code |
+
+Each list response (`GET /plants`, `/teams`, `/samples`) returns paginated data with `{"data": [...], "links": {...}, "meta": {...}}`. Page size is fixed by the server: 50 for all except `/users` which is 20. Clients must not request `?per_page=`; they must use `?page=N` to traverse data. The Flutter MasterDataAPI._parseList does not send `page` and is not aware of pagination.
 
 Access: read is Admin and Manager, write is Admin. Inspectors have no access to master data at all (`403` `forbidden`); they receive the samples they must inspect through `/sessions`, never with the answer key.
 
@@ -315,6 +319,38 @@ Team: `id`, `name`, `plant_id`, `plant` (a Plant object), `created_at`.
 Sample: `id`, `code`, `part_type_id`, `part_type` (a Part type object), `answer_key` (admin/manager only), `created_at`.
 
 Answer key history entry: `id`, `sample_id`, `old_key`, `new_key`, `changed_by` (actor uuid), `changed_by_name`, `changed_at`.
+
+## Paginated response structure
+
+Every list endpoint (`GET /users`, `/plants`, `/part-types`, `/teams`, `/samples`) returns:
+
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "code": "BCP",
+      "name": "BCP",
+      "is_active": true,
+      "created_at": "2026-11-08T07:30:00+00:00"
+    }
+  ],
+  "links": {
+    "first": "https://api.example.com/api/v1/plants?page=1",
+    "last": "https://api.example.com/api/v1/plants?page=3",
+    "prev": null,
+    "next": "https://api.example.com/api/v1/plants?page=2"
+  },
+  "meta": {
+    "current_page": 1,
+    "last_page": 3,
+    "per_page": 50,
+    "total": 120
+  }
+}
+```
+
+Clients must use `meta.last_page` and `links.next` to traverse data. The `per_page` value is read-only and fixed by the server: 20 for `/users`, 50 for all other lists.
 
 Session:
 

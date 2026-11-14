@@ -19,7 +19,7 @@ class PlantFactory extends Factory
     {
         return [
             'code' => strtoupper(fake()->unique()->bothify('PLT-###')),
-            'name' => fake()->city().' Plant',
+            'name' => fake()->randomElement(['Plant A', 'Plant B', 'Plant C', 'Plant D', 'Plant E', 'Plant F', 'Plant G', 'Warehouse A', 'Warehouse B', 'Warehouse C', 'Warehouse D', 'Warehouse E', 'Warehouse F', 'Warehouse G', 'BCP', 'UCP']),
             'is_active' => true,
         ];
     }

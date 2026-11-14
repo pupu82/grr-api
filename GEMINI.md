@@ -10,6 +10,9 @@ Laravel owns authentication, authorization, business rules, validation, data int
 
 Flutter owns presentation, user interaction, client-side usability validation, localization and API communication. Never move business logic into Flutter.
 
+## Glossary
+A plant is a production or warehouse building of the factory (for example BCP, UCP, Plant A to G, Warehouse A to G). It is never a botanical plant. The identifiers `plant`, `plants` and `plant_id` stay as they are in the database, the API and the code. Only wording and documentation reflect the meaning.
+
 - `docs/api-contract.md` is the client contract: error codes, formats, identifiers, endpoints and open decisions.
 - Update `docs/api-contract.md` in the same change as any route, request, API Resource, `ErrorCode` or enum change.
 - The Flutter repository keeps a copy of the contract and has its own `AGENTS.md`.
