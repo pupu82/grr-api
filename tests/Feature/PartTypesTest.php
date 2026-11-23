@@ -44,3 +44,21 @@ test('part type validation rejects a missing name', function () {
         ->assertStatus(422)
         ->assertJsonValidationErrors('name');
 });
+
+test('the part type list accepts multiple search terms and names', function () {
+    PartType::factory()->create(['name' => 'Upper']);
+    PartType::factory()->create(['name' => 'Bottom']);
+    PartType::factory()->create(['name' => 'Sepatu']);
+
+    $this->getJson('/api/v1/part-types?search[]=upper&search[]=sepatu')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.name', 'Sepatu')
+        ->assertJsonPath('data.1.name', 'Upper');
+
+    $this->getJson('/api/v1/part-types?name[]=Upper&name[]=Bottom')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.name', 'Bottom')
+        ->assertJsonPath('data.1.name', 'Upper');
+});

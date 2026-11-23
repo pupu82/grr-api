@@ -22,11 +22,17 @@ use App\Models\SessionParticipant;
  */
 class CalculateAttributeAgreement
 {
-    public function handle(SessionParticipant $participant): AttributeAgreementResult
+    public function handle(SessionParticipant $participant, ?int $partTypeId = null): AttributeAgreementResult
     {
         $results = $participant->relationLoaded('results')
             ? $participant->results->loadMissing('sessionSample')
             : $participant->results()->with('sessionSample')->get();
+
+        if ($partTypeId !== null) {
+            $results = $results->filter(
+                fn ($result): bool => $result->sessionSample?->part_type_id === $partTypeId,
+            );
+        }
 
         $decisions = $results->filter(
             fn ($result): bool => $result->outcome === AnswerOutcome::Answered && $result->verdict !== null,

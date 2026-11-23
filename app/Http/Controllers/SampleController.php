@@ -5,25 +5,35 @@ namespace App\Http\Controllers;
 use App\Actions\MasterData\CreateSample;
 use App\Actions\MasterData\DeleteSample;
 use App\Actions\MasterData\UpdateSample;
+use App\Http\Requests\IndexSampleRequest;
 use App\Http\Requests\StoreSampleRequest;
 use App\Http\Requests\UpdateSampleRequest;
 use App\Http\Resources\SampleResource;
 use App\Models\Sample;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
 
 class SampleController extends Controller
 {
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(IndexSampleRequest $request): AnonymousResourceCollection
     {
+        $filters = $request->validated();
+
         $samples = Sample::query()
             ->with('partType')
-            ->when($request->filled('part_type_id'), fn ($query) => $query
-                ->where('part_type_id', $request->integer('part_type_id')))
-            ->when($request->filled('search'), fn ($query) => $query
-                ->where('code', 'like', '%'.$request->string('search')->toString().'%'))
+            ->when(isset($filters['part_type_id']), fn ($query) => $query
+                ->whereIn('part_type_id', $filters['part_type_id']))
+            ->when(isset($filters['search']), function ($query) use ($filters): void {
+                $query->where(function ($query) use ($filters): void {
+                    foreach ($filters['search'] as $term) {
+                        $query->orWhere('code', 'like', '%'.$term.'%');
+                    }
+                });
+            })
+            ->when(isset($filters['code']), fn ($query) => $query->whereIn('code', $filters['code']))
+            ->when(isset($filters['answer_key']), fn ($query) => $query
+                ->whereIn('answer_key', $filters['answer_key']))
             ->orderBy('code')
             ->paginate(50);
 

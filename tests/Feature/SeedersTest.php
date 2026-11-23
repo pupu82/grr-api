@@ -32,6 +32,19 @@ test('the seeder creates the initial plants, part types and configured admin', f
         ->and(Hash::check('temporary-secret', $admin->password))->toBeTrue();
 });
 
+test('the seeder normalizes a lowercase configured admin code', function () {
+    config([
+        'grr.admin_seed.password' => 'temporary-secret',
+        'grr.admin_seed.employee_code' => 'admin123',
+    ]);
+
+    $this->seed(DatabaseSeeder::class);
+
+    $admin = User::query()->where('employee_code', 'ADMIN123')->firstOrFail();
+
+    expect($admin->employee_code)->toBe('ADMIN123');
+});
+
 test('the seeder skips the admin account when no password is configured', function () {
     config(['grr.admin_seed.password' => null]);
 

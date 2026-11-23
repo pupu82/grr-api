@@ -33,6 +33,11 @@ class InspectionSessionPolicy
         return $actor->role === Role::Admin;
     }
 
+    public function update(User $actor, InspectionSession $session): bool
+    {
+        return $actor->role === Role::Admin;
+    }
+
     public function start(User $actor, InspectionSession $session): bool
     {
         return $actor->role === Role::Admin;
@@ -73,6 +78,15 @@ class InspectionSessionPolicy
     public function viewEvaluation(User $actor, InspectionSession $session): bool
     {
         return in_array($actor->role, [Role::Admin, Role::Manager], strict: true);
+    }
+
+    /**
+     * Exporting is another read-only report, so managers may request the same
+     * files they can compute through the evaluation endpoint.
+     */
+    public function export(User $actor, InspectionSession $session): bool
+    {
+        return $this->viewEvaluation($actor, $session);
     }
 
     /**

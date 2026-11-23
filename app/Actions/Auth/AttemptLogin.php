@@ -19,9 +19,7 @@ class AttemptLogin
      */
     public function handle(string $employeeCode, string $password): ?User
     {
-        $user = User::query()
-            ->where('employee_code', $employeeCode)
-            ->first();
+        $user = User::byEmployeeCode($employeeCode)->first();
 
         if ($user === null) {
             Hash::check($password, self::DUMMY_HASH);

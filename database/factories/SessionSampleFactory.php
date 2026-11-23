@@ -23,6 +23,8 @@ class SessionSampleFactory extends Factory
         return [
             'session_id' => InspectionSession::factory(),
             'sample_id' => Sample::factory(),
+            'part_type_id' => fn (array $attributes): int => Sample::findOrFail($attributes['sample_id'])->part_type_id,
+            'part_type_name' => fn (array $attributes): string => Sample::findOrFail($attributes['sample_id'])->partType->name,
             'answer_key' => fn (array $attributes) => Sample::findOrFail($attributes['sample_id'])->answer_key,
             'position' => fn (array $attributes): int => (int) SessionSample::query()
                 ->where('session_id', $attributes['session_id'])

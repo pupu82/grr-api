@@ -27,6 +27,8 @@ class SessionSampleResource extends JsonResource
         return [
             'id' => $this->id,
             'sample_id' => $this->sample_id,
+            'part_type_id' => $this->part_type_id,
+            'part_type_name' => $this->part_type_name,
             'code' => $this->whenLoaded('sample', fn (): ?string => $this->sample?->code),
             'position' => $this->position,
             'answer_key' => $this->when($canSeeAnswerKey, fn (): string => $this->answer_key->value),

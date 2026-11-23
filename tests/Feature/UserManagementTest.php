@@ -126,6 +126,32 @@ test('an admin can create an active account with a server-generated temporary pa
         ->assertJsonMissingPath('temporary_password');
 });
 
+test('an admin account creation stores a lowercase employee code in uppercase', function () {
+    Sanctum::actingAs(User::factory()->admin()->create());
+
+    $this->postJson('/api/v1/users', [
+        'employee_code' => 'emp-5200',
+        'name' => 'Uppercase Manager',
+        'role' => 'manager',
+    ])->assertCreated()
+        ->assertJsonPath('data.employee_code', 'EMP-5200');
+
+    expect(User::query()->where('employee_code', 'EMP-5200')->exists())->toBeTrue();
+});
+
+test('an admin cannot reuse an employee code in another case', function () {
+    Sanctum::actingAs(User::factory()->admin()->create());
+    User::factory()->create(['employee_code' => 'EMP-5300']);
+
+    $this->postJson('/api/v1/users', [
+        'employee_code' => 'emp-5300',
+        'name' => 'Duplicate Inspector',
+        'role' => 'inspector',
+    ])->assertStatus(422)->assertJsonValidationErrors('employee_code');
+
+    expect(User::query()->whereRaw('UPPER(employee_code) = ?', ['EMP-5300'])->count())->toBe(1);
+});
+
 test('a password chosen by the admin is ignored when creating an account', function () {
     Sanctum::actingAs(User::factory()->admin()->create());
 

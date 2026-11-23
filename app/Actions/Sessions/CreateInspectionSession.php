@@ -2,9 +2,10 @@
 
 namespace App\Actions\Sessions;
 
+use App\Actions\Activity\LogActivity;
+use App\Enums\ActivityAction;
 use App\Enums\SessionStatus;
 use App\Models\InspectionSession;
-use App\Models\Sample;
 use App\Models\Team;
 use App\Models\User;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -16,7 +17,11 @@ class CreateInspectionSession
 {
     private const MAX_TOKEN_ATTEMPTS = 5;
 
-    public function __construct(private GenerateSessionToken $generateToken) {}
+    public function __construct(
+        private GenerateSessionToken $generateToken,
+        private LogActivity $logActivity,
+        private SnapshotSessionSamples $snapshotSamples,
+    ) {}
 
     /**
      * Create a draft session, snapshot the selected samples and register the
@@ -62,11 +67,6 @@ class CreateInspectionSession
     {
         $team = Team::query()->findOrFail($attributes['team_id']);
 
-        $samples = Sample::query()
-            ->whereIn('id', $attributes['sample_ids'])
-            ->get()
-            ->keyBy('id');
-
         $participants = User::query()
             ->whereIn('uuid', $attributes['participant_ids'])
             ->get()
@@ -86,23 +86,25 @@ class CreateInspectionSession
         $session->created_by = $actor->id;
         $session->save();
 
-        // The request order is the inspection order: position 1 is the first
-        // sample the inspector sees.
-        foreach (array_values($attributes['sample_ids']) as $index => $sampleId) {
-            $sample = $samples->get($sampleId);
-
-            $session->sessionSamples()->create([
-                'sample_id' => $sample->id,
-                'answer_key' => $sample->answer_key,
-                'position' => $index + 1,
-            ]);
-        }
+        $this->snapshotSamples->handle($session, $attributes['sample_ids']);
 
         foreach ($attributes['participant_ids'] as $uuid) {
             $session->participants()->create([
                 'user_id' => $participants->get($uuid)->id,
             ]);
         }
+
+        $this->logActivity->handle(
+            ActivityAction::SessionCreated,
+            $actor,
+            'session',
+            $session->uuid,
+            [
+                'session_date' => $session->session_date->toDateString(),
+                'samples_count' => count($attributes['sample_ids']),
+                'participants_count' => count($attributes['participant_ids']),
+            ],
+        );
 
         return $session;
     }

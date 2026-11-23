@@ -2,10 +2,13 @@
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\NormalizesEmployeeCode;
 use Illuminate\Foundation\Http\FormRequest;
 
 class RegisterRequest extends FormRequest
 {
+    use NormalizesEmployeeCode;
+
     /**
      * Determine if the user is authorized to make this request.
      */
@@ -18,8 +21,9 @@ class RegisterRequest extends FormRequest
      * Get the validation rules that apply to the request.
      *
      * Deliberately no `unique` rule on employee_code: its error message would
-     * reveal that the code is already registered. Any `role` sent by the client
-     * is ignored because it is not part of these rules.
+     * reveal that the code is already registered. The code is uppercased before
+     * validation. Any `role` sent by the client is ignored because it is not
+     * part of these rules.
      *
      * @return array<string, mixed>
      */

@@ -73,3 +73,32 @@ test('the plant list can be searched', function () {
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.code', 'WAREHOUSE-A');
 });
+
+test('the plant list accepts multiple search terms', function () {
+    Plant::factory()->create(['code' => 'PLANT-A', 'name' => 'Plant A']);
+    Plant::factory()->create(['code' => 'WAREHOUSE-A', 'name' => 'Warehouse A']);
+    Plant::factory()->create(['code' => 'UCP', 'name' => 'UCP']);
+
+    $this->getJson('/api/v1/plants?search[]=warehouse&search[]=plant')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.code', 'PLANT-A')
+        ->assertJsonPath('data.1.code', 'WAREHOUSE-A');
+});
+
+test('the plant list accepts multiple codes and an active filter', function () {
+    Plant::factory()->create(['code' => 'BCP', 'name' => 'BCP', 'is_active' => true]);
+    Plant::factory()->create(['code' => 'UCP', 'name' => 'UCP', 'is_active' => false]);
+    Plant::factory()->create(['code' => 'PLANT-A', 'name' => 'Plant A', 'is_active' => true]);
+
+    $this->getJson('/api/v1/plants?code[]=BCP&code[]=UCP')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.code', 'BCP')
+        ->assertJsonPath('data.1.code', 'UCP');
+
+    $this->getJson('/api/v1/plants?code[]=BCP&code[]=UCP&is_active=0')
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.code', 'UCP');
+});

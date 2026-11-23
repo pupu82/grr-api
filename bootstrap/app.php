@@ -28,6 +28,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'active' => EnsureUserIsActive::class,
             'password.changed' => EnsurePasswordIsChanged::class,
         ]);
+
+        // API clients must receive the documented JSON error, never a redirect.
+        // The default guest redirect points at a web login route this API does
+        // not have, and is resolved before exception rendering.
+        $middleware->redirectGuestsTo(fn (Request $request): ?string => $request->is('api/*') || $request->expectsJson()
+            ? null
+            : route('login'));
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $wantsJson = fn (Request $request): bool => $request->is('api/*') || $request->expectsJson();

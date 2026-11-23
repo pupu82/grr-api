@@ -8,8 +8,10 @@ use App\Actions\Sessions\CurrentSessionSample;
 use App\Actions\Sessions\DeleteInspectionSession;
 use App\Actions\Sessions\StartInspectionSession;
 use App\Actions\Sessions\StartParticipantRun;
+use App\Actions\Sessions\UpdateInspectionSession;
 use App\Enums\Role;
 use App\Http\Requests\StoreInspectionSessionRequest;
+use App\Http\Requests\UpdateInspectionSessionRequest;
 use App\Http\Resources\InspectionSessionResource;
 use App\Http\Resources\SessionProgressResource;
 use App\Models\InspectionResult;
@@ -33,7 +35,7 @@ class InspectionSessionController extends Controller
         $user = $request->user();
 
         $sessions = InspectionSession::query()
-            ->with(['plant', 'team', 'partType'])
+            ->with(['plant', 'team', 'partType', 'partTypes'])
             ->withCount(['sessionSamples', 'participants'])
             ->when(
                 $user->role === Role::Inspector,
@@ -52,7 +54,10 @@ class InspectionSessionController extends Controller
             )
             ->when(
                 $request->filled('part_type_id'),
-                fn ($query) => $query->where('part_type_id', $request->integer('part_type_id')),
+                fn ($query) => $query->whereHas(
+                    'partTypes',
+                    fn ($query) => $query->where('part_types.id', $request->integer('part_type_id')),
+                ),
             )
             ->orderByDesc('session_date')
             ->orderByDesc('id')
@@ -84,12 +89,28 @@ class InspectionSessionController extends Controller
     }
 
     /**
+     * Edit a draft before it starts. Starting the session freezes everything.
+     */
+    public function update(
+        UpdateInspectionSessionRequest $request,
+        InspectionSession $session,
+        UpdateInspectionSession $updateSession,
+    ): InspectionSessionResource {
+        return new InspectionSessionResource(
+            $this->detail($updateSession->handle($session, $request->validated(), $request->user())),
+        );
+    }
+
+    /**
      * Start the real inspection. Samples, participants and the time limit are
      * frozen from this point on.
      */
-    public function start(InspectionSession $session, StartInspectionSession $startSession): InspectionSessionResource
-    {
-        return new InspectionSessionResource($this->detail($startSession->handle($session)));
+    public function start(
+        Request $request,
+        InspectionSession $session,
+        StartInspectionSession $startSession,
+    ): InspectionSessionResource {
+        return new InspectionSessionResource($this->detail($startSession->handle($session, $request->user())));
     }
 
     /**
@@ -128,17 +149,23 @@ class InspectionSessionController extends Controller
      * Force-close an in-progress session. Unfinished participants stay
      * unfinished and are not evaluated; no verdict or timeout is invented.
      */
-    public function close(InspectionSession $session, CloseInspectionSession $closeSession): InspectionSessionResource
-    {
-        return new InspectionSessionResource($this->detail($closeSession->handle($session)));
+    public function close(
+        Request $request,
+        InspectionSession $session,
+        CloseInspectionSession $closeSession,
+    ): InspectionSessionResource {
+        return new InspectionSessionResource($this->detail($closeSession->handle($session, $request->user())));
     }
 
     /**
      * Delete a draft session.
      */
-    public function destroy(InspectionSession $session, DeleteInspectionSession $deleteSession): Response
-    {
-        $deleteSession->handle($session);
+    public function destroy(
+        Request $request,
+        InspectionSession $session,
+        DeleteInspectionSession $deleteSession,
+    ): Response {
+        $deleteSession->handle($session, $request->user());
 
         return response()->noContent();
     }
@@ -181,6 +208,7 @@ class InspectionSessionController extends Controller
                 'plant',
                 'team',
                 'partType',
+                'partTypes',
                 'sessionSamples' => fn ($query) => $query->orderBy('position')->with('sample'),
                 'participants' => fn ($query) => $query->with('user')->withCount('results'),
             ])

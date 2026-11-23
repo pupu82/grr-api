@@ -1,6 +1,6 @@
 # API contract
 
-Contract revision: 16
+Contract revision: 24
 
 This file is owned by the Laravel repository. The Flutter repository keeps a copy and must treat it as the only source of truth for the HTTP API.
 
@@ -15,12 +15,12 @@ Rules:
 
 ## 1. Conventions
 
-- Requests and responses are JSON. Send `Accept: application/json` and, when there is a body, `Content-Type: application/json`.
+- Requests and responses are JSON. Send `Accept: application/json` and, when there is a body, `Content-Type: application/json`. The user import preview is the only multipart request.
 - Authenticated routes need `Authorization: Bearer <Sanctum token>`.
 - Enum values are lowercase strings and are identical in the database, the API and the client. Never translate them.
 - Timestamps are ISO 8601 with offset, in UTC, for example `2026-11-08T07:30:00+00:00`. `session_date` is `YYYY-MM-DD`.
 - Pagination is Laravel's default: `{"data": [...], "links": {...}, "meta": {...}}`. Use `?page=N`. The page size is fixed by the server: 20 for `/users`, 50 for every other list. Clients must not request a different page size.
-- List order is fixed by the server: plants by `code`, part types by `name`, teams by `name`, samples by `code`, users by `name`, sessions by newest `session_date` first, answer key history newest first.
+- List order is fixed by the server: plants by `code`, part types by `name`, teams by `name`, samples by `code`, users by `name`, sessions by newest `session_date` first, answer key history newest first, activity log newest first.
 - Unknown response fields and unknown enum values must be tolerated by the client.
 
 ### Practice trials
@@ -46,6 +46,7 @@ Therefore practice trials are never stored and never sent. There is no trial res
 | Admin account created | `{"data": {...}, "temporary_password": "..."}` |
 | Password reset by an admin | `{"data": {...}, "temporary_password": "..."}` |
 | Login | `{"token": "...", "token_type": "Bearer", "user": {...}}` — `user` is **not** wrapped in `data` |
+| File download | Raw file body with `Content-Disposition`; not JSON |
 
 Errors never use `data`. See section 8.
 
@@ -59,7 +60,12 @@ Errors never use `data`. See section 8.
 | `verdict` | `answer_key`, `verdict` | `good`, `defect` |
 | `status` (session) | `session.status` | `draft`, `in_progress`, `completed` |
 | `outcome` | `result.outcome` | `answered`, `timed_out` |
-| `judgement` | evaluation **(planned)** | Provisional. Do not rely on it. |
+| `judgement` | `agreement.judgement` in the evaluation response | `acceptable`, `marginal`, `unacceptable`, or `null` |
+| `action` | `activity_log.action` | `user.created`, `user.updated`, `user.imported`, `user.approved`, `user.reactivated`, `user.deactivated`, `user.deleted`, `user.password_reset`, `session.created`, `session.updated`, `session.started`, `session.closed`, `session.deleted` |
+| `format` | `report_export.format` | `xlsx`, `csv` |
+| `status` (export) | `report_export.status` | `pending`, `processing`, `completed`, `failed` |
+| `action` (user import preview) | preview/confirm result row | `create`, `update`, `skip` |
+| `action` (user import confirm) | confirm result row | `created`, `updated`, `reset`, `skipped` |
 
 ## 5. Authentication and account flows
 
@@ -72,6 +78,8 @@ Request:
 ```json
 { "employee_code": "EMP-1000", "password": "secret" }
 ```
+
+`employee_code` matching is case-insensitive: `emp-1000` and `EMP-1000` identify the same account. Stored codes are uppercase.
 
 | Outcome | HTTP | `code` |
 | --- | --- | --- |
@@ -120,13 +128,35 @@ Rules: new password minimum 8 characters, confirmed, and different from the curr
 ```
 
 - Always `202` with `{"message": "Registration received, pending approval."}`.
+- The server stores `employee_code` in UPPERCASE. Lowercase and mixed-case input is normalized, and duplicate detection is case-insensitive.
 - The response is identical for a new and an already-used `employee_code`. The client must not claim that an account exists or was created.
 - `role` is ignored if sent. The server always creates an `inspector` with status `pending`.
 - The account cannot log in until an admin approves it and assigns a team.
 
 ### Admin-created accounts
 
-`POST /api/v1/users` returns the generated `temporary_password` once, in that response only. The account is created `active`, `registered_via: admin`, `must_change_password: true`. Never store or log the temporary password client-side beyond showing it to the admin.
+`POST /api/v1/users` returns the generated `temporary_password` once, in that response only. The account is created `active`, `registered_via: admin`, `must_change_password: true`. The submitted `employee_code` is stored in UPPERCASE and checked for uniqueness after normalization. Never store or log the temporary password client-side beyond showing it to the admin.
+
+### Spreadsheet import (Admin)
+
+Admins can first call `GET /api/v1/users/import/template?format=xlsx|csv` to download an empty template. `format` defaults to `xlsx`; an unsupported value returns `422` `validation_failed` keyed on `format`. The file contains only the heading row, so it can be uploaded without editing and will produce zero rows.
+
+Import is a two-step flow. `POST /api/v1/users/import/preview` accepts a multipart `file` and only writes a server-side preview; it creates or changes no account. `POST /api/v1/users/import/{user_import_batch}/confirm` applies that preview. A preview may be confirmed only by the admin who created it and only until `expires_at` (60 minutes by default). An unknown preview uuid returns `404` `not_found`; a second confirmation or an expired preview returns `422` `validation_failed` keyed on `import_batch`.
+
+File rules:
+
+- Accepted formats are `xlsx` and `csv`; the default limits are 5 MB and 1,000 data rows. Oversized or badly formed files return `422` `validation_failed` keyed on `file`.
+- The first row must contain `employee_code`, `name` and `team_name`. `reset_password` is optional. Headings are normalized to snake_case, so `Employee Code` and `Team Name` are accepted.
+- `employee_code` and `name` are trimmed. Codes are normalized to UPPERCASE. Maximum lengths are 30 and 100 characters.
+- `team_name` is an exact, case-insensitive match against one non-deleted team. A missing name or no match is an error; more than one match is an error.
+- `reset_password` accepts blank, `false`, `0`, `no` or `n` to leave the password alone, and `true`, `1`, `yes` or `y` to force a reset. Any other value is an error.
+
+Row rules:
+
+- A normalized code not present among active accounts means create a new `active` inspector with a server-generated temporary password, `registered_via: admin` and `must_change_password: true`. An empty code is a skipped row.
+- An existing non-deleted code means update only `name` and `team_id`. Role, status, employee code and password are preserved. With `reset_password` true, the password is also reset.
+- Every skipped row is reported; one bad row never aborts the other rows. Issue codes are `employee_code_required`, `employee_code_too_long`, `name_required`, `name_too_long`, `reset_password_invalid`, `team_not_found`, `team_name_ambiguous`, `duplicate_in_file` and `employee_code_deleted`. A code used by more than one row is skipped on every occurrence. A soft-deleted code is never revived.
+- Confirmation re-checks the current database state. Temporary passwords are generated only during confirmation, returned once in that response, and never stored in the preview or activity log.
 
 ### Forgotten password and break-glass recovery
 
@@ -145,11 +175,11 @@ If the **last active admin** is locked out, no API route can help by design: res
 php artisan grr:reset-password EMP-1000 --force
 ```
 
-The command prints the new temporary password once, revokes existing tokens, sets `must_change_password` and keeps role/status. It only works with server access, and it does not bypass any HTTP authorization because it is not an HTTP route. Without `--force` it asks for confirmation; without an interactive terminal it refuses to run. It is not exposed to the Flutter client.
+The command prints the new temporary password once, revokes existing tokens, sets `must_change_password` and keeps role/status. It only works with server access, and it does not bypass any HTTP authorization because it is not an HTTP route. Without `--force` it asks for confirmation; without an interactive terminal it refuses to run. It is not exposed to the Flutter client. It writes a `user.password_reset` activity log entry with a null actor and `context.source: "break_glass_command"`.
 
 ## 6. Endpoints
 
-`Access` uses these labels: **Public**, **Any active user**, **Admin**, **Admin or self**, **Admin and Manager (read)**, **Participating Inspector**.
+`Access` uses these labels: **Public**, **Any active user**, **Admin**, **Admin or self**, **Admin and Manager (read)**, **Admin and Manager**, **Participating Inspector**.
 
 ### Authentication
 
@@ -167,6 +197,9 @@ The command prints the new temporary password once, revokes existing tokens, set
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/users` | Admin | List users. Filters: `?status=`, `?role=`. |
 | `POST` | `/api/v1/users` | Admin | Create an account. Returns `temporary_password` once. |
+| `GET` | `/api/v1/users/import/template` | Admin | Download an empty `xlsx` or `csv` import template. |
+| `POST` | `/api/v1/users/import/preview` | Admin | Parse a spreadsheet into a reviewable preview. Creates no account. |
+| `POST` | `/api/v1/users/import/{user_import_batch}/confirm` | Admin | Apply a preview. Returns temporary passwords once. |
 | `GET` | `/api/v1/users/{user}` | Admin or self | Show one user. |
 | `PATCH` | `/api/v1/users/{user}` | Admin or self | Update the display name. Only an admin may change `team_id`. |
 | `POST` | `/api/v1/users/{user}/approve` | Admin | Activate a `pending` account and assign a team. |
@@ -181,20 +214,51 @@ An admin cannot approve, reset the password of, reactivate, deactivate or delete
 
 `POST /users/{user}/reactivate` only accepts an `inactive` account; anything else returns `422` `validation_failed` keyed on `user`. The previous approval trail is kept. A `team_id` is required only when the account has no team, because an inspector without a team cannot join a session.
 
+### Activity log
+
+| Method | Path | Access | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/activity-logs` | Admin | List administrative activity, newest first, 50 per page. |
+
+The log is an append-only audit trail of account and session changes. It records `user.created`, `user.updated`, `user.imported`, `user.approved`, `user.reactivated`, `user.deactivated`, `user.deleted`, `user.password_reset`, `session.created`, `session.updated`, `session.started`, `session.closed` and `session.deleted`. Master-data changes and answer submissions are not in this table; answer-key changes have their own history endpoint.
+
+`actor` is the authenticated admin who performed the action. A password reset run by the server-only break-glass command has `actor: null`, `actor_name: "System"` and `context.source: "break_glass_command"`. A temporary password, token or hash is never written to `context`; the temporary password is returned only once in the create/reset response.
+
+Filters accept one value or several (`?action=user.created` or `?action[]=user.created&action[]=user.deleted`). Values inside one filter are combined with OR, different filters with AND.
+
+| Filter | Meaning |
+| --- | --- |
+| `action` | One or more values from section 4. |
+| `actor_id` | One or more user public uuids. |
+| `subject_type` | `user` or `session`. |
+| `subject_id` | One or more uuids of the affected user or session. |
+| `date_from`, `date_to` | Inclusive `YYYY-MM-DD` bounds on `created_at`; `date_to` may not precede `date_from`. |
+
+Malformed filters return `422` `validation_failed` keyed on the filter. Managers and inspectors receive `403` `forbidden` even when the endpoint is called directly.
+
 ### Master data
 
 Standard REST routes for each resource: `GET` list, `POST` create, `GET` one, `PUT` or `PATCH` update, `DELETE` soft delete.
 
+A plant is a production or warehouse building. It is never a botanical plant.
+
 | Resource | Path | Extra | List filters |
 | --- | --- | --- | --- |
-| Plants | `/api/v1/plants` | | `?search=` on code and name |
+| Plants | `/api/v1/plants` | | `search`, `code`, `is_active` |
+| Part types | `/api/v1/part-types` | | `search`, `name` |
+| Teams | `/api/v1/teams` | | `plant_id`, `search`, `name` |
+| Samples | `/api/v1/samples` | `GET .../{sample}/key-histories` | `part_type_id`, `search`, `code`, `answer_key` |
 
-A plant is a production or warehouse building. It is never a botanical plant.
-| Part types | `/api/v1/part-types` | | `?search=` on name |
-| Teams | `/api/v1/teams` | | `?plant_id=`, `?search=` on name |
-| Samples | `/api/v1/samples` | `GET .../{sample}/key-histories` | `?part_type_id=`, `?search=` on code |
+#### Filter syntax
 
-Each list response (`GET /plants`, `/teams`, `/samples`) returns paginated data with `{"data": [...], "links": {...}, "meta": {...}}`. Page size is fixed by the server: 50 for all except `/users` which is 20. Clients must not request `?per_page=`; they must use `?page=N` to traverse data. The Flutter MasterDataAPI._parseList does not send `page` and is not aware of pagination.
+Each filter accepts one value or several:
+
+- `?plant_id=1` — one plant. Existing single-value clients keep working.
+- `?plant_id[]=1&plant_id[]=2` — several plants.
+
+Values inside one filter are combined with OR. Different filters are combined with AND. `search` matches any of its terms against the resource's searchable columns: code and name for plants, name for part types and teams, code for samples. `answer_key` accepts `good` and `defect`; `is_active` accepts `1` or `0`. Malformed values (non-integer ids, unknown verdicts) return `422` `validation_failed` keyed on the filter.
+
+Each list response (`GET /plants`, `/part-types`, `/teams`, `/samples`) returns paginated data with `{"data": [...], "links": {...}, "meta": {...}}`. Page size is fixed by the server: 50 for all except `/users` which is 20. Clients must not request `?per_page=`; they must use `?page=N` to traverse data.
 
 Access: read is Admin and Manager, write is Admin. Inspectors have no access to master data at all (`403` `forbidden`); they receive the samples they must inspect through `/sessions`, never with the answer key.
 
@@ -207,19 +271,26 @@ Access: read is Admin and Manager, write is Admin. Inspectors have no access to 
 | `GET` | `/api/v1/sessions` | Admin, Manager, Inspector (own) | List sessions. Filters: `?status=`, `?team_id=`, `?part_type_id=`. |
 | `POST` | `/api/v1/sessions` | Admin | Create a `draft` session: snapshot the selected samples and register the selected inspectors. |
 | `GET` | `/api/v1/sessions/{session}` | Admin, Manager, participating Inspector | Show one session with its samples and participants. |
+| `PUT` / `PATCH` | `/api/v1/sessions/{session}` | Admin | Edit a `draft` session before it starts. |
 | `POST` | `/api/v1/sessions/{session}/start` | Admin | Move `draft` to `in_progress` and freeze samples, participants and the time limit. |
 | `POST` | `/api/v1/sessions/{session}/start-run` | Participating Inspector | Start this inspector's run and return the first sample. Repeating it is harmless. |
 | `GET` | `/api/v1/sessions/{session}/current-sample` | Participating Inspector | The next sample this inspector must answer, or `null` when finished. |
 | `GET` | `/api/v1/sessions/{session}/results` | Admin, Manager, participating Inspector (own) | List the stored outcomes, grouped by participant. |
 | `POST` | `/api/v1/sessions/{session}/results` | Participating Inspector | Submit one outcome (`answered` or `timed_out`) for the current sample. |
 | `GET` | `/api/v1/sessions/{session}/evaluation` | Admin, Manager | Computed per-participant attribute agreement metrics and session-level agreement for a completed session. |
+| `POST` | `/api/v1/sessions/{session}/exports` | Admin, Manager | Queue an `xlsx` or `csv` evaluation export. |
+| `GET` | `/api/v1/exports/{export}` | Admin, Manager | Poll a queued export. |
+| `GET` | `/api/v1/exports/{export}/download` | Admin, Manager | Download a completed export. |
 | `POST` | `/api/v1/sessions/{session}/close` | Admin | Force-close an `in_progress` session. |
 | `DELETE` | `/api/v1/sessions/{session}` | Admin | Delete a `draft` session. |
 
 - An inspector only lists and opens sessions they participate in. Another session's uuid returns `403` `forbidden`.
-- A session starts as `draft`. Only a `draft` can be started or deleted; any other status returns `422` `validation_failed` keyed on `status`.
+- A session starts as `draft`. Only a `draft` can be updated, started or deleted; any other status returns `422` `validation_failed` keyed on `status`.
+- `PATCH /sessions/{session}` accepts `session_date`, `response_time_limit_ms`, `sample_ids` and `participant_ids`; at least one is required. `team_id` and `part_type_id` are immutable: delete and recreate the draft to change them. The token, plant, creator and status do not change. Replacing `sample_ids` re-copies the current answer keys, positions and part types, which is safe because a draft has no results.
 - `team_id` decides the plant; send no `plant_id`.
-- `sample_ids` order is the inspection order. Each sample is copied into the session with its answer key and `position` 1..N, so later master-data changes cannot alter the session.
+- `sample_ids` order is the inspection order. Each sample is copied into the session with its answer key, part type snapshot and `position` 1..N, so later master-data changes cannot alter the session.
+- `sample_ids` may contain samples from several part types, but at least one must belong to the primary `part_type_id`. A draft may add or remove additional part types by replacing `sample_ids`; the primary part type itself never changes. `GET /sessions?part_type_id=` matches any session that includes that part type.
+- `part_type_id`, `part_type`, `part_type_ids` and `part_types` are all returned for backward compatibility. `part_type_id` and `part_type` remain the immutable primary part type; `part_type_ids` and `part_types` include every part type in the session, primary first.
 - Participants are active inspectors of the chosen team. Pending, inactive, non-inspector or out-of-team users are rejected.
 - The token is readable, for example `SES-2026-0001`, and is unique.
 - Inspectors may arrive one at a time and on different days. Each participant has their own `started_at` and `completed_at`; the session `started_at` is when the admin started it.
@@ -267,8 +338,27 @@ Computes the AIAG attribute agreement metrics from the stored verdicts of a comp
 - `between_agreement` = samples where every compared participant gave the same verdict divided by compared samples.
 - `all_vs_standard` = samples where every compared participant gave the same verdict and that verdict equals the session sample's `answer_key` divided by compared samples. A sample where the participants disagree never counts, even if the majority is correct.
 - `between_agreement` and `all_vs_standard` are strings with two decimals, or `null`, never `0`. This is not Kappa.
-- No judgement, threshold or repeatability is returned. Those criteria are not confirmed (see section 10).
+- `agreement.judgement` is returned for the session, derived from `all_vs_standard` (see section 10). Per-participant judgement, thresholds and repeatability are not returned.
+- `part_types` is additive and contains the same `participants` and `agreement` shape scoped to each part type in the session. Each entry has `part_type_id`, `part_type_name` (from the session sample snapshot), `is_primary`, `samples_count`, `participants` and `agreement`. The primary part type is first. The top-level `participants`, `agreement`, `samples_count` and `participants_count` remain the session totals for older clients.
 - An inspector cannot read this endpoint (`403` `forbidden`). They keep access to their own stored results.
+
+### Session evaluation exports
+
+`POST /api/v1/sessions/{session}/exports` queues a file for one completed session. It returns `202` with a `pending` report export. Only `xlsx` and `csv` are accepted; an invalid `format` returns `422` `validation_failed`. A `draft` or `in_progress` session returns `422` keyed on `status`. An inspector cannot request, poll or download an export (`403` `forbidden`).
+
+The export is generated by a queue job from the same verdicts used by the evaluation endpoint. No evaluation is persisted. `status` moves through `pending` → `processing` → `completed` or `failed`. Poll `GET /api/v1/exports/{export}` until it is terminal. `download_url` is present only when `status` is `completed`; `error` is present only when `status` is `failed`. Downloading before completion returns `422` `validation_failed` keyed on `export`. The generated file name is `grr-evaluation-<session-token-slug>.<format>`.
+
+CSV uses comma delimiters and quoted cells. In both formats the metrics are strings with two decimals, and `null` is an empty cell, never `0`. `record_type` is `session` for the session total row, `participant` for each session-level participant row, and `part_type` / `part_type_participant` for the additive per-part-type rows. Session-level columns are empty on participant rows; participant columns are empty on the session row. Part-type columns are empty on `session` and `participant` rows. The `part_type` rows carry that part type's `agreement`; the `part_type_participant` rows carry both participant metrics and the part-type columns.
+
+Columns, in order:
+
+```text
+record_type, session_id, session_token, session_date, participant_id, employee_code, name, effectiveness, miss_rate, false_alarm_rate, decisions, correct_decisions, defect_decisions, good_decisions, missed_defects, false_alarms, timed_out_samples, participants_compared, compared_samples, excluded_samples, between_agreement, all_vs_standard, judgement, part_type_id, part_type_name, is_primary, samples_count
+```
+
+`is_primary` is the string `true` or `false`. `part_type_name` comes from the session sample snapshot. The first four column groups are unchanged from revision 23, so a client that ignores the new record types and columns still reads the session total.
+
+No threshold, repeatability or per-participant judgement is included. Flutter must display the API/file values without recalculating them.
 
 ### Request bodies
 
@@ -278,12 +368,15 @@ Computes the AIAG attribute agreement metrics from the stored verdicts of a comp
 | `PATCH /users/{user}` | `name` (optional, max 100), `team_id` (optional, existing non-deleted team or `null`; admin only). All other fields are rejected. |
 | `POST /users/{user}/approve` | `team_id` (required, existing non-deleted team) |
 | `POST /users/{user}/reactivate` | `team_id` (required only when the account has no team; existing non-deleted team) |
+| `POST /users/import/preview` | multipart form-data `file` (required, `xlsx` or `csv`) |
 | `POST /plants`, `PATCH /plants/{plant}` | `code` (required on create, max 30, unique among non-deleted), `name` (required on create, max 100), `is_active` (optional boolean, defaults to `true`) |
 | `POST /part-types`, `PATCH /part-types/{part_type}` | `name` (required on create, max 50) |
 | `POST /teams`, `PATCH /teams/{team}` | `plant_id` (required on create, existing non-deleted plant), `name` (required on create, max 100) |
 | `POST /samples`, `PATCH /samples/{sample}` | `code` (required on create, max 30, unique among non-deleted), `part_type_id` (required on create, existing non-deleted part type), `answer_key` (required on create, `good`/`defect`) |
-| `POST /sessions` | `team_id` (required, existing non-deleted team), `part_type_id` (required, existing non-deleted part type), `session_date` (required, `YYYY-MM-DD`), `sample_ids` (required, non-empty array of samples of that part type, in inspection order), `participant_ids` (required, non-empty array of active inspector uuids of that team), `response_time_limit_ms` (optional, 5000–600000, default `90000`) |
+| `POST /sessions` | `team_id` (required, existing non-deleted team), `part_type_id` (required, existing non-deleted primary part type), `session_date` (required, `YYYY-MM-DD`), `sample_ids` (required, non-empty array of existing samples in inspection order, including at least one sample of the primary part type; additional part types allowed), `participant_ids` (required, non-empty array of active inspector uuids of that team), `response_time_limit_ms` (optional, 5000–600000, default `90000`) |
+| `PATCH /sessions/{session}` | Any subset of `session_date`, `response_time_limit_ms`, `sample_ids`, `participant_ids`; at least one required. Same validation as create against the session's own part type and team. `team_id` and `part_type_id` are rejected with `422`. |
 | `POST /sessions/{session}/results` | `session_sample_id` (required, integer of this session), `outcome` (required, `answered`/`timed_out`), `verdict` (required when `answered`, must be `null`/omitted when `timed_out`), `response_time_ms` (required integer, 0–600000, and at most the session limit for `answered`), `answered_at` (required ISO 8601 device time) |
+| `POST /sessions/{session}/exports` | `format` (required, `xlsx` or `csv`) |
 
 `PATCH` accepts a subset. Sending `null` for a required field is a validation error. A soft-deleted code can be reused, hence "unique among non-deleted".
 
@@ -320,9 +413,94 @@ Sample: `id`, `code`, `part_type_id`, `part_type` (a Part type object), `answer_
 
 Answer key history entry: `id`, `sample_id`, `old_key`, `new_key`, `changed_by` (actor uuid), `changed_by_name`, `changed_at`.
 
+Activity log entry:
+
+```json
+{
+  "id": 42,
+  "action": "user.password_reset",
+  "actor": { "id": "0f1c7c1e-...", "name": "Admin Quality" },
+  "actor_name": "Admin Quality",
+  "subject_type": "user",
+  "subject_id": "1b2d3e4f-...",
+  "context": { "source": "api", "employee_code": "EMP-1000" },
+  "created_at": "2026-11-23T07:30:00+00:00"
+}
+```
+
+`actor` is `null` for server actions. `actor_name` is a snapshot of the name at the time of the event and survives a later rename or soft delete. `subject_id` is the public uuid of the affected user or session. `context` is always an object and never contains a password, token or hash.
+
+User import preview:
+
+```json
+{
+  "data": {
+    "id": "0f1c7c1e-...",
+    "filename": "users.csv",
+    "counts": { "create": 1, "update": 2, "skip": 1 },
+    "expires_at": "2026-11-23T11:30:00+00:00",
+    "rows": [
+      {
+        "row": 2,
+        "employee_code": "EMP-1000",
+        "name": "Siti Inspector",
+        "team_name": "QC A",
+        "reset_password": false,
+        "action": "create",
+        "issues": [],
+        "team_id": 3,
+        "user_id": null
+      }
+    ]
+  }
+}
+```
+
+User import confirmation:
+
+```json
+{
+  "data": {
+    "import_batch_id": "0f1c7c1e-...",
+    "counts": { "created": 1, "updated": 2, "reset": 0, "skipped": 1 },
+    "results": [
+      {
+        "row": 2,
+        "employee_code": "EMP-1000",
+        "action": "created",
+        "issues": [],
+        "user": { "id": "...", "employee_code": "EMP-1000", "name": "Siti Inspector" },
+        "temporary_password": "TempPass123!"
+      }
+    ]
+  }
+}
+```
+
+`temporary_password` is non-null only for `created` and `reset` rows. A `skipped` row has `action: skipped`, its `issues` and null `user`/`temporary_password`.
+
+Report export:
+
+```json
+{
+  "data": {
+    "id": "0f1c7c1e-...",
+    "session_id": "1b2d3e4f-...",
+    "format": "csv",
+    "status": "completed",
+    "file_name": "grr-evaluation-ses-2026-0001.csv",
+    "download_url": "https://api.example.test/api/v1/exports/0f1c7c1e-.../download",
+    "created_at": "2026-11-23T07:30:00+00:00",
+    "completed_at": "2026-11-23T07:30:04+00:00"
+  }
+}
+```
+
+`session_id` is present on creation and polling. `error` is present only when `status` is `failed`; `download_url` is present only when `status` is `completed`.
+
 ## Paginated response structure
 
-Every list endpoint (`GET /users`, `/plants`, `/part-types`, `/teams`, `/samples`) returns:
+Every list endpoint (`GET /users`, `/plants`, `/part-types`, `/teams`, `/samples`, `/activity-logs`) returns:
 
 ```json
 {
@@ -364,6 +542,8 @@ Session:
   "team": { "id": 3, "name": "Line 1", "plant_id": 1, "plant": { "...": "..." }, "created_at": "2026-11-08T07:30:00+00:00" },
   "part_type_id": 2,
   "part_type": { "id": 2, "name": "Upper", "samples_count": 20, "created_at": "2026-11-08T07:30:00+00:00" },
+  "part_type_ids": [2, 7],
+  "part_types": [{ "...": "part type resource, primary first" }],
   "session_date": "2026-11-12",
   "status": "draft",
   "response_time_limit_ms": 90000,
@@ -379,7 +559,7 @@ Session:
 
 `session_samples` and `participants` are only present on `POST /sessions` and `GET /sessions/{session}`; list responses use `samples_count` and `participants_count` only. `started_at` is `null` until started, `completed_at` until completed. The internal creator id is never exposed.
 
-Session sample: `id` (integer, only meaningful inside this session), `sample_id`, `code`, `position`, `answer_key` (admin/manager only, omitted for inspectors).
+Session sample: `id` (integer, only meaningful inside this session), `sample_id`, `part_type_id`, `part_type_name`, `code`, `position`, `answer_key` (admin/manager only, omitted for inspectors). `part_type_id` and `part_type_name` are copied when the draft is created or edited, so they stay historical even if the sample or part type changes later.
 
 Participant: `id` (integer), `user` (`id` = uuid, `employee_code`, `name`), `started_at`, `completed_at`, `results_count`, `is_complete`. `results_count` is present on `GET /sessions/{session}` and `POST /sessions/{session}/close`. On `GET /sessions/{session}/results` it also carries `timed_out_count` and the `results` array.
 
@@ -489,6 +669,8 @@ Evaluation (`GET /sessions/{session}/evaluation`):
       "token": "SES-2026-0001",
       "status": "completed",
       "session_date": "2026-11-12",
+      "part_type_id": 2,
+      "part_type_ids": [2, 7],
       "response_time_limit_ms": 90000,
       "started_at": "2026-11-12T08:00:00+00:00",
       "completed_at": "2026-11-12T09:00:00+00:00",
@@ -522,8 +704,18 @@ Evaluation (`GET /sessions/{session}/evaluation`):
       "excluded_samples": 1,
       "between_agreement": "89.47",
       "all_vs_standard": "78.95",
-      "judgement": "conditional"
-    }
+      "judgement": "unacceptable"
+    },
+    "part_types": [
+      {
+        "part_type_id": 2,
+        "part_type_name": "Upper",
+        "is_primary": true,
+        "samples_count": 10,
+        "participants": [{ "...": "same shape as top-level participants" }],
+        "agreement": { "...": "same shape as top-level agreement" }
+      }
+    ]
   }
 }
 ```
@@ -537,11 +729,11 @@ Evaluation (`GET /sessions/{session}/evaluation`):
 | `missed_defects` | verdict = `good` when key = `defect` | Incorrect defects |
 | `false_alarms` | verdict = `defect` when key = `good` | Incorrectly flagged |
 | `timed_out_samples` | \( \text{number of outcomes} = \text{timed\_out} \) | Missing data, never counted in rates |
-| `miss_rate` | \( \dfrac{ \text{missed\_defects} }{ \text{defect\_decisions} + \text{missed\_defects} } \) | 0 when \( \text{defect\_decisions} + \text{missed\_defects} = 0 \) |
-| `false_alarm_rate` | \( \dfrac{ \text{false\_alarms} }{ \text{good\_decisions} + \text{false\_alarms} } \) | 0 when \( \text{good\_decisions} + \text{false\_alarms} = 0 \) |
-| `effectiveness` | \( \dfrac{ \text{correct\_decisions} }{ \text{decisions} } \) | 0 when \( \text{decisions} = 0 \) |
-| `between_agreement` | \( \dfrac{ \text{samples where all compared participants agree} }{ \text{compared\_samples} } \times 100 \) | **String**; 0 or null when undefined |
-| `all_vs_standard` | \( \dfrac{ \text{samples where all agree and match key} }{ \text{compared\_samples} } \times 100 \) | **String**; 0 or null when undefined |
+| `miss_rate` | \( \dfrac{ \text{missed\_defects} }{ \text{defect\_decisions} + \text{missed\_defects} } \) | `null` when \( \text{defect\_decisions} + \text{missed\_defects} = 0 \) |
+| `false_alarm_rate` | \( \dfrac{ \text{false\_alarms} }{ \text{good\_decisions} + \text{false\_alarms} } \) | `null` when \( \text{good\_decisions} + \text{false\_alarms} = 0 \) |
+| `effectiveness` | \( \dfrac{ \text{correct\_decisions} }{ \text{decisions} } \) | `null` when \( \text{decisions} = 0 \) |
+| `between_agreement` | \( \dfrac{ \text{samples where all compared participants agree} }{ \text{compared\_samples} } \times 100 \) | **String**; `null` when undefined |
+| `all_vs_standard` | \( \dfrac{ \text{samples where all agree and match key} }{ \text{compared\_samples} } \times 100 \) | **String**; `null` when undefined |
 
 | field name | endpoint | notes |
 | --- | --- | --- |
@@ -552,7 +744,7 @@ Evaluation (`GET /sessions/{session}/evaluation`):
 - `effectiveness`, `miss_rate`, `false_alarm_rate`, `between_agreement` and `all_vs_standard` are strings with exactly two decimals, or `null` when their denominator is zero or the comparison is undefined.
 - `is_complete` is `false` for a participant of a force-closed session who never finished. Their metrics cover only the stored verdicts, and they are not part of `agreement`.
 - A soft-deleted inspector still appears in the evaluation.
-- `agreement` is additive: older clients may ignore it without breaking.
+- `agreement` and `part_types` are additive: older clients may ignore them without breaking.
 
 ## 7. Access matrix
 
@@ -560,13 +752,16 @@ Evaluation (`GET /sessions/{session}/evaluation`):
 | --- | --- | --- | --- |
 | Own profile, logout, password change | yes | yes | yes |
 | User management | yes | no | no |
+| User import | yes | no | no |
 | Master data read | yes | yes | no |
 | Master data write | yes | no | no |
 | Sessions | all | read-only | own |
 | Results | all | read-only | own |
 | Evaluations | all | read-only | no |
+| Report exports | create, poll, download | create, poll, download | no |
+| Activity log | read | no | no |
 
-`403` from a policy is `code: forbidden`. Inspectors may read only their own user record; another user's uuid returns `403`.
+`403` from a policy is `code: forbidden`. Inspectors may read only their own user record; another user's uuid returns `403`. A manager may generate evaluation files because that only reads session data; it does not change results.
 
 ## 8. Errors
 
@@ -606,7 +801,7 @@ Codes are defined in `App\Enums\ErrorCode`. Adding a code is backwards compatibl
 
 ## 9. Not implemented yet
 
-Per-participant attribute agreement metrics and session-level agreement exist for a completed session. Not implemented: judgement, thresholds, persisted evaluations and report exports.
+Per-participant attribute agreement metrics, session-level agreement and the additive per-part-type breakdown exist for a completed session. Session-level `judgement` is derived from `all_vs_standard` and returned in `agreement`. Queued `xlsx`/`csv` report exports are implemented and documented in section 6. Not implemented: per-participant judgement, thresholds and persisted evaluations.
 
 `timed_out` rows are missing data, not a verdict. They never count as `good` or `defect` in any metric. Repeatability is not measured.
 
@@ -614,11 +809,12 @@ Per-participant attribute agreement metrics and session-level agreement exist fo
 
 These decisions are not made. Until they are, neither side may assume an answer.
 
-1. **Judgement.** Per-participant judgement is not implemented. Session-level judgement (`acceptable`, `marginal`, `unacceptable`) is computed from `all_vs_standard` and returned in the `agreement` object. Thresholds for per-participant or session-level judgement remain provisional.
+1. **Per-participant judgement and thresholds.** Not implemented. Session-level judgement (`acceptable`, `marginal`, `unacceptable`) is already implemented and documented in section 6; only per-participant criteria and any threshold display remain open.
 2. **Session and result error codes.** Proposed additions, backwards compatible: `session_not_accepting_answers`, `sample_already_answered`, `cannot_modify_own_account`, `last_admin`, `resource_in_use`. Until added, those cases return `validation_failed` or `forbidden`.
 3. **Deleting master data that sessions refer to.** Either refuse with `resource_in_use` or allow the soft delete and keep it visible in historical results.
-4. **Changing a role or employee code.** Neither is editable today. Decide whether an admin ever needs to change a role in place, or whether a new account replaces the old one. `employee_code` is an identity and should stay immutable.
+4. **Changing a role or employee code.** Neither is editable today. Decide whether an admin ever needs to change a role in place, or whether a new account replaces the old one. `employee_code` is an identity, is always stored in UPPERCASE, and should stay immutable.
 5. **Repeatability.** Inspector repeatability requires repeated verdicts for the same sample under identical conditions. Practice trials are performed outside the application and are not stored; repeatability is not measured.
-6. **Editing a draft session.** The time limit, samples and participants can be chosen at creation only; there is no update endpoint yet. Decide whether the client needs to edit a draft before it starts.
-7. **Removing a participant.** A participant who never starts leaves the session open. Today the admin can only force-close the whole session. Decide whether removing an untouched participant is needed.
-8. **Persisting evaluations.** `grr_evaluations` and `session_evaluations` remain unused because saving a row would require a judgement. Decide whether to persist computed metrics later, or keep recalculating on demand.
+6. **Removing a participant.** A participant who never starts leaves the session open. Today the admin can only force-close the whole session. Decide whether removing an untouched participant is needed.
+7. **Persisting evaluations.** `grr_evaluations` and `session_evaluations` remain unused; metrics are computed on demand. Decide whether to persist them later, or keep recalculating on demand.
+
+Decided and implemented: a draft can be edited through `PATCH /sessions/{session}` (see section 6). That item was previously open.

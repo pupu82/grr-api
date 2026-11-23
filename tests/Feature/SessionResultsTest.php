@@ -44,6 +44,8 @@ function sessionResultsFixture(object $test): array
     foreach ($samples as $index => $sample) {
         $sessionSampleIds[] = $session->sessionSamples()->create([
             'sample_id' => $sample->id,
+            'part_type_id' => $partType->id,
+            'part_type_name' => $partType->name,
             'answer_key' => $sample->answer_key,
             'position' => $index + 1,
         ])->id;

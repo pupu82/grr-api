@@ -14,6 +14,13 @@ class InspectionSessionResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $partTypes = $this->whenLoaded('partTypes', fn () => $this->partTypes
+            ->sortBy(fn ($partType): array => [
+                $partType->id === $this->part_type_id ? 0 : 1,
+                $partType->name,
+            ])
+            ->values());
+
         return [
             'id' => $this->uuid,
             'token' => $this->token,
@@ -23,6 +30,8 @@ class InspectionSessionResource extends JsonResource
             'team' => $this->whenLoaded('team', fn () => $this->team === null ? null : new TeamResource($this->team)),
             'part_type_id' => $this->part_type_id,
             'part_type' => $this->whenLoaded('partType', fn () => $this->partType === null ? null : new PartTypeResource($this->partType)),
+            'part_type_ids' => $this->whenLoaded('partTypes', fn () => $partTypes->pluck('id')->all()),
+            'part_types' => $this->whenLoaded('partTypes', fn () => PartTypeResource::collection($partTypes)),
             'session_date' => $this->session_date?->toDateString(),
             'status' => $this->status->value,
             'response_time_limit_ms' => $this->response_time_limit_ms,

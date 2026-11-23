@@ -19,6 +19,8 @@ use App\Models\InspectionSession;
  * - `all_vs_standard`: samples where every compared participant gave the same
  *   verdict and that verdict matches the session sample's answer key, divided by
  *   the compared samples.
+ * - An optional part type id scopes the calculation to that part type's
+ *   snapshotted samples; the session total omits the argument.
  * - `judgement`: derived from `allVsStandard` using the AIAG MSA criteria:
  *   - `> 90%` = `acceptable`
  *   - `80% – 90%` = `marginal`
@@ -28,12 +30,12 @@ use App\Models\InspectionSession;
  */
 class CalculateSessionAgreement
 {
-    public function handle(InspectionSession $session): SessionAgreementResult
+    public function handle(InspectionSession $session, ?int $partTypeId = null): SessionAgreementResult
     {
-        return $this->doHandle($session);
+        return $this->doHandle($session, $partTypeId);
     }
 
-    private function doHandle(InspectionSession $session): SessionAgreementResult
+    private function doHandle(InspectionSession $session, ?int $partTypeId): SessionAgreementResult
     {
         $participants = $session->participants()
             ->whereNotNull('completed_at')
@@ -42,6 +44,10 @@ class CalculateSessionAgreement
             ->get();
 
         $samples = $session->sessionSamples()
+            ->when(
+                $partTypeId !== null,
+                fn ($query) => $query->where('part_type_id', $partTypeId),
+            )
             ->orderBy('position')
             ->get();
 

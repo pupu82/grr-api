@@ -5,27 +5,36 @@ namespace App\Http\Controllers;
 use App\Actions\MasterData\CreatePlant;
 use App\Actions\MasterData\DeletePlant;
 use App\Actions\MasterData\UpdatePlant;
+use App\Http\Requests\IndexPlantRequest;
 use App\Http\Requests\StorePlantRequest;
 use App\Http\Requests\UpdatePlantRequest;
 use App\Http\Resources\PlantResource;
 use App\Models\Plant;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
 
 class PlantController extends Controller
 {
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(IndexPlantRequest $request): AnonymousResourceCollection
     {
-        $plants = Plant::query()
-            ->when($request->filled('search'), function ($query) use ($request): void {
-                $search = '%'.$request->string('search')->toString().'%';
+        $filters = $request->validated();
 
-                $query->where(fn ($query) => $query
-                    ->where('code', 'like', $search)
-                    ->orWhere('name', 'like', $search));
+        $plants = Plant::query()
+            ->when(isset($filters['search']), function ($query) use ($filters): void {
+                $query->where(function ($query) use ($filters): void {
+                    foreach ($filters['search'] as $term) {
+                        $search = '%'.$term.'%';
+
+                        $query->orWhere(fn ($query) => $query
+                            ->where('code', 'like', $search)
+                            ->orWhere('name', 'like', $search));
+                    }
+                });
             })
+            ->when(isset($filters['code']), fn ($query) => $query->whereIn('code', $filters['code']))
+            ->when(array_key_exists('is_active', $filters), fn ($query) => $query
+                ->where('is_active', $request->boolean('is_active')))
             ->orderBy('code')
             ->paginate(50);
 

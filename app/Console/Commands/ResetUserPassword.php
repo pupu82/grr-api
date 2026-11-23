@@ -26,7 +26,7 @@ class ResetUserPassword extends Command
     ): int {
         $employeeCode = (string) $this->argument('employee_code');
 
-        $user = User::query()->where('employee_code', $employeeCode)->first();
+        $user = User::byEmployeeCode($employeeCode)->first();
 
         if ($user === null) {
             $this->components->error("No account uses employee code [{$employeeCode}].");
@@ -54,7 +54,7 @@ class ResetUserPassword extends Command
 
         $temporaryPassword = $generateTemporaryPassword->handle();
 
-        $resetUserPassword->handle($user, $temporaryPassword);
+        $resetUserPassword->handle($user, $temporaryPassword, null, ['source' => 'break_glass_command']);
 
         $this->components->info('Password reset. All existing tokens were revoked.');
         $this->line('Employee code: '.$user->employee_code);

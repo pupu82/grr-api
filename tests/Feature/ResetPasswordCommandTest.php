@@ -34,6 +34,18 @@ test('the break-glass command rescues the last admin and prints the password onc
         ->and($admin->tokens()->count())->toBe(0);
 });
 
+test('the break-glass command accepts an employee code in any case', function () {
+    $admin = User::factory()->admin()->create(['employee_code' => 'ADMIN002']);
+
+    Artisan::call('grr:reset-password', [
+        'employee_code' => 'admin002',
+        '--force' => true,
+    ]);
+
+    expect(Artisan::output())->toContain('ADMIN002')
+        ->and($admin->refresh()->must_change_password)->toBeTrue();
+});
+
 test('the break-glass command refuses to run non-interactively without force', function () {
     $user = User::factory()->create(['employee_code' => 'EMP-8100']);
 

@@ -22,7 +22,6 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 class UserController extends Controller
@@ -120,13 +119,7 @@ class UserController extends Controller
     ): JsonResponse {
         $temporaryPassword = $generateTemporaryPassword->handle();
 
-        $user = $resetUserPassword->handle($user, $temporaryPassword);
-
-        // Audit who reset which account, without ever logging the password.
-        Log::info('User password reset', [
-            'actor_id' => $request->user()->uuid,
-            'target_id' => $user->uuid,
-        ]);
+        $user = $resetUserPassword->handle($user, $temporaryPassword, $request->user(), ['source' => 'api']);
 
         return (new UserResource($user->load('team')))
             ->additional([
@@ -148,6 +141,7 @@ class UserController extends Controller
         $user = $reactivateUser->handle(
             $user,
             $teamId === null ? null : Team::findOrFail($teamId),
+            $request->user(),
         );
 
         return new UserResource($user->load('team'));
@@ -156,17 +150,17 @@ class UserController extends Controller
     /**
      * Deactivate an account.
      */
-    public function deactivate(User $user, DeactivateUser $deactivateUser): UserResource
+    public function deactivate(Request $request, User $user, DeactivateUser $deactivateUser): UserResource
     {
-        return new UserResource($deactivateUser->handle($user)->load('team'));
+        return new UserResource($deactivateUser->handle($user, $request->user())->load('team'));
     }
 
     /**
      * Soft delete an account.
      */
-    public function destroy(User $user, DeleteUser $deleteUser): Response
+    public function destroy(Request $request, User $user, DeleteUser $deleteUser): Response
     {
-        $deleteUser->handle($user);
+        $deleteUser->handle($user, $request->user());
 
         return response()->noContent();
     }

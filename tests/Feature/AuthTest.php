@@ -29,6 +29,26 @@ test('self registration creates a pending inspector', function () {
         ->and($user->approved_at)->toBeNull();
 });
 
+test('self registration stores a mixed case employee code in uppercase', function () {
+    $this->postJson('/api/v1/register', grrRegistrationPayload([
+        'employee_code' => 'emp-1234',
+    ]))->assertStatus(202);
+
+    $user = User::query()->where('employee_code', 'EMP-1234')->firstOrFail();
+
+    expect($user->employee_code)->toBe('EMP-1234');
+});
+
+test('registration treats an existing code in another case as a duplicate', function () {
+    User::factory()->create(['employee_code' => 'EMP-1000']);
+
+    $this->postJson('/api/v1/register', grrRegistrationPayload([
+        'employee_code' => 'emp-1000',
+    ]))->assertStatus(202);
+
+    expect(User::query()->whereRaw('UPPER(employee_code) = ?', ['EMP-1000'])->count())->toBe(1);
+});
+
 test('self registration ignores a role sent by the client', function () {
     $this->postJson('/api/v1/register', grrRegistrationPayload(['role' => 'admin']))
         ->assertStatus(202);
@@ -89,6 +109,16 @@ test('login returns a token for valid credentials', function () {
         ->assertJsonPath('data.id', $user->uuid)
         ->assertJsonMissingPath('data.password');
 });
+
+test('login accepts an employee code in any case', function (string $employeeCode) {
+    User::factory()->create(['employee_code' => 'EMP-1000']);
+
+    $this->postJson('/api/v1/login', [
+        'employee_code' => $employeeCode,
+        'password' => 'password',
+    ])->assertOk()
+        ->assertJsonPath('user.employee_code', 'EMP-1000');
+})->with(['emp-1000', 'eMp-1000', 'EMP-1000']);
 
 test('login gives the same generic error for a wrong password and an unknown code', function () {
     User::factory()->create(['employee_code' => 'EMP-1000']);

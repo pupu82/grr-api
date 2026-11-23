@@ -33,6 +33,17 @@ class InspectionSessionFactory extends Factory
         ];
     }
 
+    /**
+     * A session always represents at least its primary part type, including
+     * when factories create it directly in tests.
+     */
+    public function configure(): static
+    {
+        return $this->afterCreating(function (InspectionSession $session): void {
+            $session->partTypes()->syncWithoutDetaching([$session->part_type_id]);
+        });
+    }
+
     public function forTeam(Team $team): static
     {
         return $this->state(fn (): array => [

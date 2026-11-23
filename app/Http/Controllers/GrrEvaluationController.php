@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\Grr\CalculatePartTypeEvaluations;
 use App\Actions\Grr\CalculateSessionAgreement;
 use App\Actions\Grr\CalculateSessionEvaluation;
 use App\Http\Resources\SessionMetricsResource;
@@ -19,12 +20,14 @@ class GrrEvaluationController extends Controller
         InspectionSession $session,
         CalculateSessionEvaluation $calculate,
         CalculateSessionAgreement $calculateAgreement,
+        CalculatePartTypeEvaluations $calculatePartTypes,
     ): SessionMetricsResource {
         $evaluations = $calculate->handle($session);
         $agreement = $calculateAgreement->handle($session);
+        $partTypeEvaluations = $calculatePartTypes->handle($session, $evaluations);
 
         $session->loadCount(['sessionSamples', 'participants']);
 
-        return new SessionMetricsResource($session, $evaluations, $agreement);
+        return new SessionMetricsResource($session, $evaluations, $agreement, $partTypeEvaluations);
     }
 }

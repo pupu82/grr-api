@@ -1,15 +1,19 @@
 <?php
 
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\GrrEvaluationController;
 use App\Http\Controllers\InspectionResultController;
 use App\Http\Controllers\InspectionSessionController;
 use App\Http\Controllers\PartTypeController;
 use App\Http\Controllers\PlantController;
+use App\Http\Controllers\ReportExportController;
 use App\Http\Controllers\SampleController;
 use App\Http\Controllers\SampleKeyHistoryController;
 use App\Http\Controllers\TeamController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\UserImportController;
+use App\Models\ActivityLog;
 use App\Models\InspectionSession;
 use App\Models\PartType;
 use App\Models\Plant;
@@ -44,6 +48,12 @@ Route::prefix('v1')->group(function () {
             // Users
             Route::get('/users', [UserController::class, 'index'])->can('viewAny', User::class);
             Route::post('/users', [UserController::class, 'store'])->can('create', User::class);
+            Route::get('/users/import/template', [UserImportController::class, 'template'])
+                ->can('import', User::class)
+                ->name('users.import.template');
+            Route::post('/users/import/preview', [UserImportController::class, 'preview'])->can('import', User::class);
+            Route::post('/users/import/{user_import_batch}/confirm', [UserImportController::class, 'confirm'])
+                ->can('confirm', 'user_import_batch');
             Route::get('/users/{user}', [UserController::class, 'show'])->can('view', 'user');
             Route::match(['put', 'patch'], '/users/{user}', [UserController::class, 'update'])->can('update', 'user');
             Route::post('/users/{user}/approve', [UserController::class, 'approve'])->can('approve', 'user');
@@ -51,6 +61,9 @@ Route::prefix('v1')->group(function () {
             Route::post('/users/{user}/reactivate', [UserController::class, 'reactivate'])->can('reactivate', 'user');
             Route::post('/users/{user}/deactivate', [UserController::class, 'deactivate'])->can('deactivate', 'user');
             Route::delete('/users/{user}', [UserController::class, 'destroy'])->can('delete', 'user');
+
+            // Activity log
+            Route::get('/activity-logs', [ActivityLogController::class, 'index'])->can('viewAny', ActivityLog::class);
 
             // Plants
             Route::get('/plants', [PlantController::class, 'index'])->can('viewAny', Plant::class);
@@ -86,12 +99,22 @@ Route::prefix('v1')->group(function () {
             Route::get('/sessions', [InspectionSessionController::class, 'index'])->can('viewAny', InspectionSession::class);
             Route::post('/sessions', [InspectionSessionController::class, 'store'])->can('create', InspectionSession::class);
             Route::get('/sessions/{session}', [InspectionSessionController::class, 'show'])->can('view', 'session');
+            Route::match(['put', 'patch'], '/sessions/{session}', [InspectionSessionController::class, 'update'])->can('update', 'session');
             Route::post('/sessions/{session}/start', [InspectionSessionController::class, 'start'])->can('start', 'session');
             Route::post('/sessions/{session}/start-run', [InspectionSessionController::class, 'startRun'])->can('startRun', 'session');
             Route::get('/sessions/{session}/current-sample', [InspectionSessionController::class, 'currentSample'])->can('viewCurrentSample', 'session');
             Route::get('/sessions/{session}/results', [InspectionResultController::class, 'index'])->can('viewResults', 'session');
             Route::post('/sessions/{session}/results', [InspectionResultController::class, 'store'])->can('submitResult', 'session');
             Route::get('/sessions/{session}/evaluation', [GrrEvaluationController::class, 'show'])->can('viewEvaluation', 'session');
+            Route::post('/sessions/{session}/exports', [ReportExportController::class, 'store'])
+                ->can('export', 'session')
+                ->name('exports.store');
+            Route::get('/exports/{export}', [ReportExportController::class, 'show'])
+                ->can('view', 'export')
+                ->name('exports.show');
+            Route::get('/exports/{export}/download', [ReportExportController::class, 'download'])
+                ->can('view', 'export')
+                ->name('exports.download');
             Route::post('/sessions/{session}/close', [InspectionSessionController::class, 'close'])->can('close', 'session');
             Route::delete('/sessions/{session}', [InspectionSessionController::class, 'destroy'])->can('delete', 'session');
         });

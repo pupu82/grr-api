@@ -33,6 +33,8 @@ function agreementParticipant(array $outcomes): SessionParticipant
 
         $sessionSample = $session->sessionSamples()->create([
             'sample_id' => $sample->id,
+            'part_type_id' => $partType->id,
+            'part_type_name' => $partType->name,
             'answer_key' => $answerKey,
             'position' => $index + 1,
         ]);

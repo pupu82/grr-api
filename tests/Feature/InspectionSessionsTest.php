@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\Verdict;
 use App\Models\InspectionSession;
 use App\Models\PartType;
 use App\Models\Plant;
@@ -76,7 +77,7 @@ test('the session time limit defaults to ninety seconds', function () {
         ->assertJsonPath('data.response_time_limit_ms', 90000);
 });
 
-test('samples must belong to the chosen part type', function () {
+test('a session must include a sample from the primary part type', function () {
     $foreign = Sample::factory()->create();
 
     $this->postJson('/api/v1/sessions', sessionPayload($this, [
@@ -84,9 +85,69 @@ test('samples must belong to the chosen part type', function () {
     ]))
         ->assertStatus(422)
         ->assertJsonPath('code', 'validation_failed')
-        ->assertJsonValidationErrors('sample_ids.0');
+        ->assertJsonValidationErrors('sample_ids');
 
     expect(InspectionSession::query()->count())->toBe(0);
+});
+
+test('a session can snapshot samples from additional part types', function () {
+    $additionalPartType = PartType::factory()->create();
+    $additionalSample = Sample::factory()->for($additionalPartType)->create();
+
+    $this->postJson('/api/v1/sessions', sessionPayload($this, [
+        'sample_ids' => [...$this->samples->pluck('id')->all(), $additionalSample->id],
+    ]))
+        ->assertCreated()
+        ->assertJsonPath('data.part_type_id', $this->partType->id)
+        ->assertJsonPath('data.part_type_ids.0', $this->partType->id)
+        ->assertJsonPath('data.part_type_ids.1', $additionalPartType->id)
+        ->assertJsonPath('data.part_types.0.id', $this->partType->id)
+        ->assertJsonPath('data.part_types.1.id', $additionalPartType->id)
+        ->assertJsonPath('data.session_samples.3.part_type_id', $additionalPartType->id)
+        ->assertJsonPath('data.session_samples.3.part_type_name', $additionalPartType->name)
+        ->assertJsonPath('data.samples_count', 4);
+
+    $session = InspectionSession::query()->sole();
+
+    $actualPartTypeIds = $session->partTypes()->pluck('part_types.id')->sort()->values()->all();
+    $expectedPartTypeIds = collect([$this->partType->id, $additionalPartType->id])->sort()->values()->all();
+
+    expect($actualPartTypeIds)->toBe($expectedPartTypeIds);
+});
+
+test('the part type filter matches additional session part types', function () {
+    $additionalPartType = PartType::factory()->create();
+    $additionalSample = Sample::factory()->for($additionalPartType)->create();
+
+    $this->postJson('/api/v1/sessions', sessionPayload($this))->assertCreated();
+
+    $mixedId = $this->postJson('/api/v1/sessions', sessionPayload($this, [
+        'sample_ids' => [$this->samples[0]->id, $additionalSample->id],
+    ]))
+        ->assertCreated()
+        ->json('data.id');
+
+    $this->getJson('/api/v1/sessions?part_type_id='.$additionalPartType->id)
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.id', $mixedId);
+});
+
+test('session samples keep the part type name from the snapshot', function () {
+    $additionalPartType = PartType::factory()->create(['name' => 'Original Name']);
+    $additionalSample = Sample::factory()->for($additionalPartType)->create();
+
+    $sessionId = $this->postJson('/api/v1/sessions', sessionPayload($this, [
+        'sample_ids' => [$this->samples[0]->id, $additionalSample->id],
+    ]))
+        ->assertCreated()
+        ->json('data.id');
+
+    $additionalPartType->update(['name' => 'Renamed Name']);
+
+    $this->getJson('/api/v1/sessions/'.$sessionId)
+        ->assertOk()
+        ->assertJsonPath('data.session_samples.1.part_type_name', 'Original Name');
 });
 
 test('participants must be active inspectors of the chosen team', function () {
@@ -171,6 +232,8 @@ test('an inspector never receives the snapshotted answer key', function () {
     $session->participants()->create(['user_id' => $this->inspectors[0]->id]);
     $session->sessionSamples()->create([
         'sample_id' => $this->samples[0]->id,
+        'part_type_id' => $this->samples[0]->part_type_id,
+        'part_type_name' => $this->partType->name,
         'answer_key' => $this->samples[0]->answer_key,
         'position' => 1,
     ]);
@@ -198,6 +261,8 @@ test('only a draft session can be deleted', function () {
     $draft = InspectionSession::factory()->forTeam($this->team)->create();
     $draft->sessionSamples()->create([
         'sample_id' => $this->samples[0]->id,
+        'part_type_id' => $this->samples[0]->part_type_id,
+        'part_type_name' => $this->partType->name,
         'answer_key' => $this->samples[0]->answer_key,
         'position' => 1,
     ]);
@@ -246,4 +311,154 @@ test('a session response never exposes the internal creator id', function () {
     $this->postJson('/api/v1/sessions', sessionPayload($this))
         ->assertCreated()
         ->assertJsonMissingPath('data.created_by');
+});
+
+test('an admin can edit a draft before starting it', function () {
+    $this->postJson('/api/v1/sessions', sessionPayload($this, ['response_time_limit_ms' => 90000]))
+        ->assertCreated();
+
+    $session = InspectionSession::query()->sole();
+    $originalToken = $session->token;
+    $newParticipant = User::factory()->inspector()->forTeam($this->team)->create();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [
+        'session_date' => '2026-11-20',
+        'response_time_limit_ms' => 120000,
+        'sample_ids' => [$this->samples[2]->id, $this->samples[0]->id],
+        'participant_ids' => [$newParticipant->uuid],
+    ])
+        ->assertOk()
+        ->assertJsonPath('data.session_date', '2026-11-20')
+        ->assertJsonPath('data.response_time_limit_ms', 120000)
+        ->assertJsonPath('data.samples_count', 2)
+        ->assertJsonPath('data.participants_count', 1)
+        ->assertJsonPath('data.session_samples.0.sample_id', $this->samples[2]->id)
+        ->assertJsonPath('data.session_samples.0.position', 1)
+        ->assertJsonPath('data.session_samples.0.answer_key', $this->samples[2]->answer_key->value)
+        ->assertJsonPath('data.session_samples.1.sample_id', $this->samples[0]->id)
+        ->assertJsonPath('data.session_samples.1.position', 2)
+        ->assertJsonPath('data.participants.0.user.id', $newParticipant->uuid);
+
+    $session->refresh();
+
+    expect($session->token)->toBe($originalToken)
+        ->and($session->created_by)->toBe($this->admin->id)
+        ->and($session->team_id)->toBe($this->team->id)
+        ->and($session->part_type_id)->toBe($this->partType->id)
+        ->and($session->status->value)->toBe('draft');
+});
+
+test('a draft can replace additional part types without changing the primary one', function () {
+    $additionalPartType = PartType::factory()->create();
+    $additionalSample = Sample::factory()->for($additionalPartType)->create();
+
+    $this->postJson('/api/v1/sessions', sessionPayload($this, [
+        'sample_ids' => [$this->samples[0]->id, $additionalSample->id],
+    ]))->assertCreated();
+
+    $session = InspectionSession::query()->sole();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [
+        'sample_ids' => [$this->samples[1]->id],
+    ])
+        ->assertOk()
+        ->assertJsonPath('data.part_type_id', $this->partType->id)
+        ->assertJsonPath('data.part_type_ids', [$this->partType->id])
+        ->assertJsonPath('data.samples_count', 1);
+
+    expect($session->partTypes()->pluck('part_types.id')->all())->toBe([$this->partType->id]);
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [
+        'sample_ids' => [$this->samples[1]->id, $additionalSample->id],
+    ])
+        ->assertOk()
+        ->assertJsonPath('data.part_type_ids.1', $additionalPartType->id)
+        ->assertJsonPath('data.samples_count', 2);
+});
+
+test('editing a draft re-copies the current answer keys', function () {
+    $sample = $this->samples->first();
+
+    $this->postJson('/api/v1/sessions', sessionPayload($this, ['sample_ids' => [$sample->id]]))
+        ->assertCreated()
+        ->assertJsonPath('data.session_samples.0.answer_key', $sample->answer_key->value);
+
+    $sample->update(['answer_key' => Verdict::Defect]);
+    $session = InspectionSession::query()->sole();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [
+        'sample_ids' => [$sample->id],
+    ])
+        ->assertOk()
+        ->assertJsonPath('data.session_samples.0.answer_key', 'defect');
+
+    expect($session->refresh()->sessionSamples()->sole()->answer_key)->toBe(Verdict::Defect);
+});
+
+test('only a draft session can be updated', function () {
+    $session = InspectionSession::factory()->forTeam($this->team)->inProgress()->create();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, ['response_time_limit_ms' => 120000])
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'validation_failed')
+        ->assertJsonValidationErrors('status');
+});
+
+test('only an admin can edit a draft session', function (string $role) {
+    $session = InspectionSession::factory()->forTeam($this->team)->create();
+    Sanctum::actingAs(User::factory()->{$role}()->create());
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, ['response_time_limit_ms' => 120000])
+        ->assertForbidden()
+        ->assertJsonPath('code', 'forbidden');
+})->with(['manager', 'inspector']);
+
+test('draft edit validates samples and participants against the session', function () {
+    $session = InspectionSession::factory()->forTeam($this->team)->create();
+    $otherTeam = Team::factory()->for($this->plant)->create();
+    $outsider = User::factory()->inspector()->forTeam($otherTeam)->create();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [
+        'sample_ids' => [999999],
+        'participant_ids' => [$outsider->uuid],
+    ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['sample_ids.0', 'participant_ids.0']);
+});
+
+test('a draft replacement must keep a primary part type sample', function () {
+    $additionalPartType = PartType::factory()->create();
+    $additionalSample = Sample::factory()->for($additionalPartType)->create();
+
+    $this->postJson('/api/v1/sessions', sessionPayload($this))->assertCreated();
+    $session = InspectionSession::query()->sole();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [
+        'sample_ids' => [$additionalSample->id],
+    ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('sample_ids');
+
+    expect($session->sessionSamples()->count())->toBe(3);
+});
+
+test('draft edit requires at least one field', function () {
+    $session = InspectionSession::factory()->forTeam($this->team)->create();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, [])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('session');
+});
+
+test('draft edit cannot change the team or part type', function () {
+    $session = InspectionSession::factory()->forTeam($this->team)->create();
+    $otherTeam = Team::factory()->for($this->plant)->create();
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, ['team_id' => $otherTeam->id])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('team_id');
+
+    $this->patchJson('/api/v1/sessions/'.$session->uuid, ['part_type_id' => $this->partType->id])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('part_type_id');
 });

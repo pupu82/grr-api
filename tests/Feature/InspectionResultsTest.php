@@ -39,6 +39,8 @@ function inspectionRunSession(object $test, int $sampleCount = 3): array
     foreach ($samples as $index => $sample) {
         $session->sessionSamples()->create([
             'sample_id' => $sample->id,
+            'part_type_id' => $partType->id,
+            'part_type_name' => $partType->name,
             'answer_key' => $sample->answer_key,
             'position' => $index + 1,
         ]);

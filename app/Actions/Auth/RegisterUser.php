@@ -20,7 +20,7 @@ class RegisterUser
      */
     public function handle(array $attributes): void
     {
-        if (User::query()->where('employee_code', $attributes['employee_code'])->exists()) {
+        if (User::byEmployeeCode($attributes['employee_code'])->exists()) {
             Log::info('Duplicate registration attempt.', [
                 'employee_code' => $attributes['employee_code'],
             ]);

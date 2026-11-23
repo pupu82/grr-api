@@ -5,23 +5,31 @@ namespace App\Http\Controllers;
 use App\Actions\MasterData\CreatePartType;
 use App\Actions\MasterData\DeletePartType;
 use App\Actions\MasterData\UpdatePartType;
+use App\Http\Requests\IndexPartTypeRequest;
 use App\Http\Requests\StorePartTypeRequest;
 use App\Http\Requests\UpdatePartTypeRequest;
 use App\Http\Resources\PartTypeResource;
 use App\Models\PartType;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
 
 class PartTypeController extends Controller
 {
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(IndexPartTypeRequest $request): AnonymousResourceCollection
     {
+        $filters = $request->validated();
+
         $partTypes = PartType::query()
             ->withCount('samples')
-            ->when($request->filled('search'), fn ($query) => $query
-                ->where('name', 'like', '%'.$request->string('search')->toString().'%'))
+            ->when(isset($filters['search']), function ($query) use ($filters): void {
+                $query->where(function ($query) use ($filters): void {
+                    foreach ($filters['search'] as $term) {
+                        $query->orWhere('name', 'like', '%'.$term.'%');
+                    }
+                });
+            })
+            ->when(isset($filters['name']), fn ($query) => $query->whereIn('name', $filters['name']))
             ->orderBy('name')
             ->paginate(50);
 

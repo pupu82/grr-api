@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
@@ -59,6 +60,17 @@ class InspectionSession extends Model
     public function partType(): BelongsTo
     {
         return $this->belongsTo(PartType::class);
+    }
+
+    /**
+     * Every part type represented by this session. Trashed part types stay
+     * visible because the session is historical data.
+     */
+    public function partTypes(): BelongsToMany
+    {
+        return $this->belongsToMany(PartType::class, 'inspection_session_part_types', 'session_id', 'part_type_id')
+            ->withTrashed()
+            ->orderBy('part_types.name');
     }
 
     public function creator(): BelongsTo

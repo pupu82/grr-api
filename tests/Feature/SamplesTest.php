@@ -107,3 +107,47 @@ test('sample codes are unique among non-deleted rows', function () {
         'answer_key' => 'good',
     ])->assertStatus(422)->assertJsonValidationErrors('code');
 });
+
+test('the sample list accepts multiple part types, codes, keys and search terms', function () {
+    $upper = PartType::factory()->create();
+    $bottom = PartType::factory()->create();
+
+    Sample::factory()->good()->create(['code' => 'SMP-GOOD', 'part_type_id' => $upper->id]);
+    Sample::factory()->defect()->create(['code' => 'SMP-BAD', 'part_type_id' => $upper->id]);
+    Sample::factory()->defect()->create(['code' => 'SMP-OTHER', 'part_type_id' => $bottom->id]);
+
+    $this->getJson('/api/v1/samples?part_type_id[]='.$upper->id.'&part_type_id[]='.$bottom->id)
+        ->assertOk()
+        ->assertJsonCount(3, 'data');
+
+    $this->getJson('/api/v1/samples?code[]=SMP-GOOD&code[]=SMP-BAD')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.code', 'SMP-BAD')
+        ->assertJsonPath('data.1.code', 'SMP-GOOD');
+
+    $this->getJson('/api/v1/samples?answer_key[]=good&answer_key[]=defect')
+        ->assertOk()
+        ->assertJsonCount(3, 'data');
+
+    $this->getJson('/api/v1/samples?search[]=good&search[]=other')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.code', 'SMP-GOOD')
+        ->assertJsonPath('data.1.code', 'SMP-OTHER');
+
+    $this->getJson('/api/v1/samples?part_type_id[]='.$upper->id.'&answer_key[]=good')
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.code', 'SMP-GOOD');
+});
+
+test('sample filters reject malformed multi values', function () {
+    $this->getJson('/api/v1/samples?part_type_id[]=abc')
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('part_type_id.0');
+
+    $this->getJson('/api/v1/samples?answer_key[]=ok')
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('answer_key.0');
+});

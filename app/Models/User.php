@@ -8,12 +8,16 @@ use App\Enums\UserStatus;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable([
@@ -36,6 +40,19 @@ class User extends Authenticatable
     public function getRouteKeyName(): string
     {
         return 'uuid';
+    }
+
+    #[Scope]
+    protected function byEmployeeCode(Builder $query, string $employeeCode): Builder
+    {
+        return $query->whereRaw('UPPER(employee_code) = ?', [Str::upper($employeeCode)]);
+    }
+
+    protected function employeeCode(): Attribute
+    {
+        return Attribute::make(
+            set: fn (string $value): string => Str::upper($value),
+        );
     }
 
     protected function casts(): array

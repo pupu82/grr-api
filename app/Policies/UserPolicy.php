@@ -33,6 +33,15 @@ class UserPolicy
     }
 
     /**
+     * Importing accounts is an administrative write operation. An inspector can
+     * never use the import endpoints, even for their own employee code.
+     */
+    public function import(User $actor): bool
+    {
+        return $actor->role === Role::Admin;
+    }
+
+    /**
      * Only an admin can change another account; a user may update their own.
      */
     public function update(User $actor, User $target): bool

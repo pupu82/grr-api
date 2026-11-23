@@ -55,6 +55,36 @@ test('the team list can be filtered by plant', function () {
         ->assertJsonCount(2, 'data');
 });
 
+test('the team list accepts multiple plants, names and search terms', function () {
+    $bcp = Plant::factory()->create(['code' => 'BCP']);
+    $ucp = Plant::factory()->create(['code' => 'UCP']);
+    $other = Plant::factory()->create(['code' => 'PLANT-A']);
+
+    Team::factory()->create(['plant_id' => $bcp->id, 'name' => 'Line 1']);
+    Team::factory()->create(['plant_id' => $ucp->id, 'name' => 'Line 2']);
+    Team::factory()->create(['plant_id' => $other->id, 'name' => 'Warehouse Crew']);
+
+    $this->getJson('/api/v1/teams?plant_id[]='.$bcp->id.'&plant_id[]='.$ucp->id)
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.name', 'Line 1')
+        ->assertJsonPath('data.1.name', 'Line 2');
+
+    $this->getJson('/api/v1/teams?search[]=line&search[]=warehouse')
+        ->assertOk()
+        ->assertJsonCount(3, 'data');
+
+    $this->getJson('/api/v1/teams?name[]=Line 1&name[]=Warehouse Crew')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.name', 'Line 1')
+        ->assertJsonPath('data.1.name', 'Warehouse Crew');
+
+    $this->getJson('/api/v1/teams?plant_id[]='.$bcp->id.'&name[]=Warehouse Crew')
+        ->assertOk()
+        ->assertJsonCount(0, 'data');
+});
+
 test('a team cannot be created under a soft-deleted plant', function () {
     $plant = Plant::factory()->create();
     $plant->delete();

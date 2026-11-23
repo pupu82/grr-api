@@ -2,13 +2,18 @@
 
 namespace App\Actions\Users;
 
+use App\Actions\Activity\LogActivity;
+use App\Enums\ActivityAction;
 use App\Enums\RegistrationSource;
 use App\Enums\Role;
 use App\Enums\UserStatus;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 class CreateUser
 {
+    public function __construct(private LogActivity $logActivity) {}
+
     /**
      * Create an active account on behalf of an admin. The account is registered
      * via admin, gets the server-generated temporary password and must change
@@ -18,23 +23,33 @@ class CreateUser
      */
     public function handle(User $actor, array $attributes, string $temporaryPassword): User
     {
-        $user = new User;
-        $user->fill([
-            'employee_code' => $attributes['employee_code'],
-            'name' => $attributes['name'],
-            'password' => $temporaryPassword,
-            'team_id' => $attributes['team_id'] ?? null,
-        ]);
-        $user->role = $attributes['role'] instanceof Role
-            ? $attributes['role']
-            : Role::from($attributes['role']);
-        $user->status = UserStatus::Active;
-        $user->registered_via = RegistrationSource::Admin;
-        $user->must_change_password = true;
-        $user->approved_by = $actor->id;
-        $user->approved_at = now();
-        $user->save();
+        return DB::transaction(function () use ($actor, $attributes, $temporaryPassword): User {
+            $user = new User;
+            $user->fill([
+                'employee_code' => $attributes['employee_code'],
+                'name' => $attributes['name'],
+                'password' => $temporaryPassword,
+                'team_id' => $attributes['team_id'] ?? null,
+            ]);
+            $user->role = $attributes['role'] instanceof Role
+                ? $attributes['role']
+                : Role::from($attributes['role']);
+            $user->status = UserStatus::Active;
+            $user->registered_via = RegistrationSource::Admin;
+            $user->must_change_password = true;
+            $user->approved_by = $actor->id;
+            $user->approved_at = now();
+            $user->save();
 
-        return $user;
+            $this->logActivity->handle(
+                ActivityAction::UserCreated,
+                $actor,
+                'user',
+                $user->uuid,
+                ['employee_code' => $user->employee_code, 'role' => $user->role->value],
+            );
+
+            return $user;
+        });
     }
 }

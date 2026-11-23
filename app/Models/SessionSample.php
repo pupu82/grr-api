@@ -13,6 +13,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable([
     'session_id',
     'sample_id',
+    'part_type_id',
+    'part_type_name',
     'answer_key',
     'position',
 ])]
@@ -24,6 +26,7 @@ class SessionSample extends Model
     protected function casts(): array
     {
         return [
+            'part_type_id' => 'integer',
             'position' => 'integer',
             'answer_key' => Verdict::class,
         ];

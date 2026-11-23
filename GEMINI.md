@@ -86,7 +86,7 @@ Only an admin reactivates an `inactive` account, through `POST /users/{user}/rea
 
 ### Users
 
-- Unique `employee_code` (an internal employee code, not a national ID number).
+- Unique `employee_code` (an internal employee code, not a national ID number). Stored values are UPPERCASE; login and every write path normalize case, and `employee_code` stays immutable through the API.
 - Every user has a `uuid`. The `uuid` is the public identifier. The bigint `id` stays internal and is never exposed for users.
 
 ### Master Data
@@ -108,7 +108,7 @@ Users, plants, part types, samples and teams use soft deletes.
 - A session plans at most three trials. Trials are simulations performed outside the application: the Quality Engineer asks the inspector whether a sample is good or defect, and each answer is one trial. Trials are never stored, so there is no trial table, no `trial_number` and no `trial_count` in the application.
 - The application records exactly one real-inspection verdict per inspector per sample, enforced by a unique constraint on `inspection_results (participant_id, session_sample_id)`.
 - Store status with `SessionStatus`. A session starts as `draft`; starting it freezes the sample snapshot, the participants and the response time limit.
-- The admin selects the samples and the participating inspectors when the session is created. The samples are copied with their answer keys and a `position` (the inspection order).
+- The admin selects the samples and the participating inspectors when the session is created. The samples are copied with their answer keys and a `position` (the inspection order). A `draft` may be edited through `PATCH /sessions/{session}`: `session_date`, `response_time_limit_ms`, `sample_ids` and `participant_ids` are replaceable, but `team_id` and `part_type_id` are immutable. Replacing samples re-copies the current answer keys because a draft has no results yet. Once started, none of this is editable.
 - Results are append-only once a session is finished. Never update or delete completed results. Corrections create a new record.
 - Each inspector answers in `position` order, one sample at a time. Skipping ahead and returning to an earlier sample are both forbidden.
 - Each participant has exactly one outcome per session sample: `answered` with a `good`/`defect` verdict, or `timed_out` without a verdict.
@@ -144,7 +144,7 @@ The thesis labels `miss_rate` as "P false" and `false_alarm_rate` as "P mis". Th
 - Put calculations in action classes under `app/Actions/Grr/`. Never in controllers, models or Flutter.
 - Thresholds come from the AIAG MSA manual and live in `config/grr.php`. Never hard-code, invent or change a value; ask first.
 - Guard against division by zero (no defect samples, no good samples). Return an explicit `null` for the affected metric instead of throwing.
-- The evaluation endpoint computes metrics on demand from the immutable verdicts of a completed session. It returns per-participant metrics plus the session-level `between_agreement` and `all_vs_standard` across completed participants. Do not persist `grr_evaluations` or `session_evaluations` while judgement and repeatability are unconfirmed, and return no judgement, threshold or repeatability.
+- The evaluation endpoint computes metrics on demand from the immutable verdicts of a completed session. It returns per-participant metrics plus the session-level `between_agreement`, `all_vs_standard` and `judgement` across completed participants. Do not persist `grr_evaluations` or `session_evaluations` while per-participant judgement and repeatability are unconfirmed, and return no threshold or repeatability.
 - Session-level agreement compares only participants with `completed_at`; fewer than two makes both rates `null`. A sample is excluded when any compared participant timed out (or has no stored result), reported as `excluded_samples`. `between_agreement` is the share of compared samples where all compared participants gave the same verdict. `all_vs_standard` additionally requires that verdict to equal the session sample's answer key. This is not Kappa. An unfinished participant of a force-closed session is never compared.
 - Serialize decimal metrics as strings with two decimals (`"33.33"`); `null` means the denominator is zero or the comparison is undefined, never `0`.
 - `Judgement` values for session-level agreement are derived from `all_vs_standard`: `acceptable` (>90%), `marginal` (80–90%), `unacceptable` (<80%). Returned in the `agreement` object of the evaluation endpoint. Per-participant judgement remains unconfirmed.
@@ -166,10 +166,18 @@ Enums live in `app/Enums/` as string-backed enums: `Role`, `UserStatus`, `Regist
 - Backend values and error codes are language-independent. Never translate role, status, verdict or metric values, and never base business decisions on message text.
 - Backend-generated documents, emails or notifications that need localization require an explicit language requirement for that feature.
 
+### Activity log
+
+- Administrative changes are recorded in a dedicated `activity_logs` table through `App\Actions\Activity\LogActivity`. Do not add an activity-log Composer package.
+- Use `App\Enums\ActivityAction` for the event name; its values are part of the API contract. Start with user lifecycle events and session lifecycle events. Do not log answer submissions or master-data edits there; answer-key changes already use `sample_key_histories`.
+- Each entry stores the actor's internal id (never exposed), a snapshot of the actor's name, the action, the subject type and public uuid, a small context object, and the event time. A server-only action has a null actor and `actor_name: "System"`.
+- Never write passwords, temporary passwords, tokens, hashes or secrets to `context`. `LogActivity` strips keys matching those names as a second line of defence, but callers must pass only explicit safe fields.
+- `GET /api/v1/activity-logs` is Admin only, paginated 50, newest first, with filters for `action`, `actor_id`, `subject_type`, `subject_id`, `date_from` and `date_to`. Managers and Inspectors are forbidden even when calling the route directly.
+
 ## 8. Application Structure
 
 - `app/Http/Controllers/`, `app/Http/Requests/`, `app/Http/Resources/`
-- `app/Actions/` (domain logic, AAA under `app/Actions/Grr/`), `app/Enums/`, `app/Models/`, `app/Jobs/`, `app/Policies/`, `app/Console/Commands/`
+- `app/Actions/` (domain logic, AAA under `app/Actions/Grr/`, audit writes under `app/Actions/Activity/`), `app/Enums/`, `app/Models/`, `app/Jobs/`, `app/Policies/`, `app/Console/Commands/`
 - `routes/api.php` (versioned under `/api/v1`), `routes/console.php`, `bootstrap/app.php`
 - `config/grr.php` (AAA thresholds)
 - `database/migrations/`, `database/factories/`, `database/seeders/`

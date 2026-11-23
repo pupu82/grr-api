@@ -41,6 +41,8 @@ function evaluationSession(object $test): array
 
         $sessionSamples[] = $session->sessionSamples()->create([
             'sample_id' => $sample->id,
+            'part_type_id' => $partType->id,
+            'part_type_name' => $partType->name,
             'answer_key' => $answerKey,
             'position' => $index + 1,
         ]);
@@ -304,6 +306,8 @@ function agreementSession(object $test, array $answerKeys): array
 
         $sessionSamples[] = $session->sessionSamples()->create([
             'sample_id' => $sample->id,
+            'part_type_id' => $partType->id,
+            'part_type_name' => $partType->name,
             'answer_key' => $answerKey,
             'position' => $index + 1,
         ]);
@@ -478,4 +482,91 @@ test('a force-closed session does not compare an unfinished participant', functi
         ->assertJsonPath('data.agreement.between_agreement', '100.00')
         ->assertJsonPath('data.agreement.all_vs_standard', '100.00')
         ->assertJsonPath('data.participants.2.is_complete', false);
+});
+
+/**
+ * A completed session with two samples per part type, in inspection order.
+ *
+ * @return array{0: InspectionSession, 1: array<int, SessionSample>}
+ */
+function multiPartTypeEvaluationSession(object $test): array
+{
+    $primary = PartType::factory()->create(['name' => 'Primary Part']);
+    $additional = PartType::factory()->create(['name' => 'Additional Part']);
+
+    $session = InspectionSession::factory()->forTeam($test->team)->completed()->create([
+        'part_type_id' => $primary->id,
+        'response_time_limit_ms' => 90000,
+    ]);
+
+    $session->partTypes()->sync([$primary->id, $additional->id]);
+
+    $sessionSamples = [];
+    $position = 1;
+
+    foreach ([[$primary, Verdict::Good], [$primary, Verdict::Defect], [$additional, Verdict::Good], [$additional, Verdict::Defect]] as [$partType, $answerKey]) {
+        $sample = Sample::factory()->for($partType)->create(['answer_key' => $answerKey]);
+
+        $sessionSamples[] = $session->sessionSamples()->create([
+            'sample_id' => $sample->id,
+            'part_type_id' => $partType->id,
+            'part_type_name' => $partType->name,
+            'answer_key' => $answerKey,
+            'position' => $position++,
+        ]);
+    }
+
+    return [$session, $sessionSamples];
+}
+
+test('evaluation reports metrics per part type while keeping session totals', function () {
+    [$session, $samples] = multiPartTypeEvaluationSession($this);
+
+    // First inspector: misses the primary defect and false-alarms on the
+    // additional good sample. Second inspector: the mirror image.
+    evaluationParticipant($session, $samples, [Verdict::Good, Verdict::Good, Verdict::Defect, Verdict::Defect]);
+    evaluationParticipant($session, $samples, [Verdict::Good, Verdict::Defect, Verdict::Good, Verdict::Good]);
+
+    Sanctum::actingAs($this->admin);
+
+    $this->getJson('/api/v1/sessions/'.$session->uuid.'/evaluation')
+        ->assertOk()
+        ->assertJsonPath('data.agreement.all_vs_standard', '25.00')
+        ->assertJsonPath('data.participants.0.metrics.effectiveness', '50.00')
+        ->assertJsonPath('data.participants.0.metrics.miss_rate', '50.00')
+        ->assertJsonPath('data.participants.0.metrics.false_alarm_rate', '50.00')
+        ->assertJsonCount(2, 'data.part_types')
+        ->assertJsonPath('data.part_types.0.part_type_id', $samples[0]->part_type_id)
+        ->assertJsonPath('data.part_types.0.part_type_name', 'Primary Part')
+        ->assertJsonPath('data.part_types.0.is_primary', true)
+        ->assertJsonPath('data.part_types.0.samples_count', 2)
+        ->assertJsonPath('data.part_types.0.participants.0.metrics.effectiveness', '50.00')
+        ->assertJsonPath('data.part_types.0.participants.0.metrics.miss_rate', '100.00')
+        ->assertJsonPath('data.part_types.0.participants.0.metrics.false_alarm_rate', '0.00')
+        ->assertJsonPath('data.part_types.0.agreement.between_agreement', '50.00')
+        ->assertJsonPath('data.part_types.0.agreement.all_vs_standard', '50.00')
+        ->assertJsonPath('data.part_types.0.agreement.judgement', 'unacceptable')
+        ->assertJsonPath('data.part_types.1.part_type_id', $samples[2]->part_type_id)
+        ->assertJsonPath('data.part_types.1.part_type_name', 'Additional Part')
+        ->assertJsonPath('data.part_types.1.is_primary', false)
+        ->assertJsonPath('data.part_types.1.participants.0.metrics.miss_rate', '0.00')
+        ->assertJsonPath('data.part_types.1.participants.0.metrics.false_alarm_rate', '100.00')
+        ->assertJsonPath('data.part_types.1.participants.1.metrics.miss_rate', '100.00')
+        ->assertJsonPath('data.part_types.1.agreement.between_agreement', '0.00')
+        ->assertJsonPath('data.part_types.1.agreement.all_vs_standard', '0.00');
+});
+
+test('per part type evaluation uses the snapshotted part type name', function () {
+    [$session, $samples] = multiPartTypeEvaluationSession($this);
+
+    PartType::findOrFail($samples[2]->part_type_id)->update(['name' => 'Renamed Part']);
+
+    evaluationParticipant($session, $samples, [Verdict::Good, Verdict::Defect, Verdict::Good, Verdict::Defect]);
+    evaluationParticipant($session, $samples, [Verdict::Good, Verdict::Defect, Verdict::Good, Verdict::Defect]);
+
+    Sanctum::actingAs($this->manager);
+
+    $this->getJson('/api/v1/sessions/'.$session->uuid.'/evaluation')
+        ->assertOk()
+        ->assertJsonPath('data.part_types.1.part_type_name', 'Additional Part');
 });

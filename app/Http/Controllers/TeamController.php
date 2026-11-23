@@ -5,25 +5,33 @@ namespace App\Http\Controllers;
 use App\Actions\MasterData\CreateTeam;
 use App\Actions\MasterData\DeleteTeam;
 use App\Actions\MasterData\UpdateTeam;
+use App\Http\Requests\IndexTeamRequest;
 use App\Http\Requests\StoreTeamRequest;
 use App\Http\Requests\UpdateTeamRequest;
 use App\Http\Resources\TeamResource;
 use App\Models\Team;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
 
 class TeamController extends Controller
 {
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(IndexTeamRequest $request): AnonymousResourceCollection
     {
+        $filters = $request->validated();
+
         $teams = Team::query()
             ->with('plant')
-            ->when($request->filled('plant_id'), fn ($query) => $query
-                ->where('plant_id', $request->integer('plant_id')))
-            ->when($request->filled('search'), fn ($query) => $query
-                ->where('name', 'like', '%'.$request->string('search')->toString().'%'))
+            ->when(isset($filters['plant_id']), fn ($query) => $query
+                ->whereIn('plant_id', $filters['plant_id']))
+            ->when(isset($filters['search']), function ($query) use ($filters): void {
+                $query->where(function ($query) use ($filters): void {
+                    foreach ($filters['search'] as $term) {
+                        $query->orWhere('name', 'like', '%'.$term.'%');
+                    }
+                });
+            })
+            ->when(isset($filters['name']), fn ($query) => $query->whereIn('name', $filters['name']))
             ->orderBy('name')
             ->paginate(50);
 

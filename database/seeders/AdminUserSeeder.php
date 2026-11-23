@@ -27,7 +27,7 @@ class AdminUserSeeder extends Seeder
             return;
         }
 
-        if (User::withTrashed()->where('employee_code', $employeeCode)->exists()) {
+        if (User::withTrashed()->byEmployeeCode((string) $employeeCode)->exists()) {
             return;
         }
 

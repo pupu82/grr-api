@@ -4,8 +4,10 @@ namespace App\Http\Requests;
 
 use App\Enums\Role;
 use App\Enums\UserStatus;
+use App\Models\Sample;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
 
 class StoreInspectionSessionRequest extends FormRequest
 {
@@ -20,8 +22,8 @@ class StoreInspectionSessionRequest extends FormRequest
     /**
      * Get the validation rules that apply to the request.
      *
-     * The client selects the samples and the inspectors. Both are validated
-     * against the chosen team and part type so a session never mixes data.
+     * Samples may span part types, but the primary part type must be
+     * represented. Inspectors are validated against the chosen team.
      *
      * @return array<string, mixed>
      */
@@ -49,9 +51,7 @@ class StoreInspectionSessionRequest extends FormRequest
             'sample_ids.*' => [
                 'integer',
                 'distinct',
-                Rule::exists('samples', 'id')
-                    ->whereNull('deleted_at')
-                    ->where('part_type_id', $this->input('part_type_id')),
+                Rule::exists('samples', 'id')->whereNull('deleted_at'),
             ],
             'participant_ids' => ['required', 'array', 'min:1'],
             'participant_ids.*' => [
@@ -63,6 +63,31 @@ class StoreInspectionSessionRequest extends FormRequest
                     ->where('status', UserStatus::Active->value)
                     ->where('team_id', $this->input('team_id')),
             ],
+        ];
+    }
+
+    /**
+     * @return array<int, \Closure>
+     */
+    public function after(): array
+    {
+        return [
+            function (Validator $validator): void {
+                if ($validator->errors()->isNotEmpty()) {
+                    return;
+                }
+
+                $primaryPartTypeId = (int) $this->input('part_type_id');
+
+                $hasPrimarySample = Sample::query()
+                    ->whereIn('id', $this->input('sample_ids', []))
+                    ->where('part_type_id', $primaryPartTypeId)
+                    ->exists();
+
+                if (! $hasPrimarySample) {
+                    $validator->errors()->add('sample_ids', 'At least one sample must belong to the primary part type.');
+                }
+            },
         ];
     }
 }
